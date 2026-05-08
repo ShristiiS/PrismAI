@@ -1,0 +1,95 @@
+Date: May 14, 2025 — 7:45 PM
+From: arjun@nutrivana.in
+To: shristi@nutrivana.in
+Subject: Pregnant women data — these numbers are real
+Shristi,
+
+I want to share something before the meeting tomorrow. The preliminary numbers on the pregnant women cohort are striking enough that I want you to see them first and pressure-test the methodology with me before we say anything to the team.
+
+The 11 users Ananya identified from the free-text health goals field. Sessions per day: 4.2 vs 1.8 overall. Session length: 6.3 minutes vs 2.8 minutes. Day 7 retention: 9 of 11 returned on day 7. That is 81.8% vs 41.9% for everyone else.
+
+My first instinct was that these numbers are too good and there is a methodology problem. So I ran two checks.
+
+Check 1: survivorship bias. Are these 11 users just super-engaged users who happen to have mentioned pregnancy, rather than pregnant women who are engaged because of the micronutrient tracking? I looked at their first week behaviour before they started using micronutrient tracking heavily. Week 1 behaviour was similar to the overall user base. The high engagement developed over time as they used the product more deeply. Not survivorship bias.
+
+Check 2: identification accuracy. Are the 11 users actually pregnant? I ran a secondary identification method — users who have both folate AND iron as tracked micronutrients simultaneously. That identified 15 users. 11 overlap with Ananya's list. The 4 additional ones I need to verify. But the core 11 are solid.
+
+The numbers are real. I wanted you to know before the meeting.
+
+Arjun
+
+---
+Date: May 14, 2025 — 9:12 PM
+From: shristi@nutrivana.in
+To: arjun@nutrivana.in
+Subject: Re: Pregnant women data — these numbers are real
+
+Arjun,
+
+81.8% Day 7 retention. The highest benchmark I have read for health apps is 35-40% at Day 7 for top performers. 81.8% is more than double that.
+
+The survivorship bias check is the right one to run. Thank you for doing it before I asked.
+
+One more thing I want to understand: what is the iodine finding Ananya mentioned? She said 54% of pregnant users track iodine vs under 5% of other users. That gap is larger than the folate or iron gap. What does that tell us about these users?
+
+Shristi
+
+---
+Date: May 15, 2025 — 8:30 AM
+From: arjun@nutrivana.in
+To: shristi@nutrivana.in, ananya@nutrivana.in
+Subject: Re: Pregnant women data — these numbers are real
+
+Shristi, looping in Ananya.
+
+The iodine finding tells us these are medically informed users. Iodine deficiency in pregnancy is a well-known risk for fetal brain development but it is not the nutrient that gets the most press — folate and iron dominate the prenatal conversation. A user who is specifically tracking iodine has either a doctor who mentioned it or has done their own research. Either way they are not casual health trackers.
+
+This also explains the session length. 6.3 minutes per session means they are not just logging and leaving. They are checking their progress against specific targets, reviewing their trend data, comparing individual nutrients. They are using the product the way we designed it to be used — as a health tracking tool not just a calorie counter.
+
+Ananya — can you send me the list of all 11 users so I can run the full cohort analysis formally? And separately, when do the user interviews start?
+
+Arjun
+
+---
+Date: May 15, 2025 — 9:45 AM
+From: ananya@nutrivana.in
+To: arjun@nutrivana.in, shristi@nutrivana.in
+Subject: Re: Pregnant women data — these numbers are real
+
+Arjun, list sent separately.
+
+Shristi — I want to be honest about something. When I first noticed the pattern I almost did not flag it. 11 users out of 850 is 1.3%. My instinct was that it is too small a sample to mean anything and I would look like I was reading tea leaves.
+
+What changed my mind was the iodine. One user tracking iodine — maybe a coincidence. Six users tracking iodine — that is a pattern. Six users who all mentioned pregnancy, all tracking iodine, all with session lengths more than double the average. That is not a coincidence.
+
+First interviews start May 15. I have 5 confirmed for this week and next.
+
+Ananya
+
+---
+Date: May 15, 2025 — 11:00 AM
+From: shristi@nutrivana.in
+To: arjun@nutrivana.in, ananya@nutrivana.in
+Subject: Re: Pregnant women data — these numbers are real
+
+Ananya — you were right to flag it and right to be honest about almost not flagging it. That kind of intellectual honesty is exactly what makes research useful.
+
+The fact that you almost dismissed it because the sample was small is a good reminder for all of us: in early-stage products a segment of 11 users who behave completely differently from everyone else is more interesting than 100 users who behave like everyone else. The signal is in the outliers.
+
+Arjun — run the full formal cohort analysis. I want this in a format we can share with Ravi.
+
+Shristi
+
+---
+Date: May 18, 2025 — 5:30 PM
+From: arjun@nutrivana.in
+To: shristi@nutrivana.in, ananya@nutrivana.in
+Subject: Re: Pregnant women data — these numbers are real
+
+Full cohort analysis complete.
+
+The headline number for Ravi: 3.1x engagement vs overall average. That is the combination of session frequency (2.33x) and session length (2.25x). Individually both are striking. Combined they are extraordinary.
+
+One finding I want to flag that is not in the formal analysis but worth knowing: I checked whether the pregnant users are more likely to create custom foods. 8 of the 11 (73%) have created at least one custom food vs 29% of other users. They are not just using the existing database — they are building their own. Which means they are doing exactly what our best-retaining users do. Custom food creation, high micronutrient tracking, long sessions. The 3.1x engagement and the 81.8% retention will compound over time as they personalise the app further.
+
+Arjun

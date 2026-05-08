@@ -1,0 +1,101 @@
+Date: June 12, 2025 — 6:00 PM
+From: kabir@nutrivana.in
+To: arjun@nutrivana.in, shristi@nutrivana.in, ananya@nutrivana.in
+Subject: ICMR vs WHO — which values do we use for prenatal presets?
+
+Team,
+
+Research complete for prenatal micronutrient targets. But I need to flag a decision before I finalise the designs.
+
+There are two sets of guidelines I can use: WHO international standards and ICMR (Indian Council of Medical Research) standards. They are different. For our users ICMR is likely more appropriate but I want everyone to agree before I lock the values.
+
+Key differences:
+
+Nutrient     | WHO      | ICMR
+-------------|----------|------
+Iron         | 27mg     | 35mg
+Folate T1    | 400mcg   | 400mcg (same)
+Folate T2    | 600mcg   | 600mcg (same)
+Calcium T3   | 1000mg   | 1200mg
+B12          | 2.6mcg   | 2.8mcg
+Iodine       | 220mcg   | 220mcg (same)
+
+The iron difference is the most significant. ICMR recommends 35mg vs WHO 27mg. That is a 30% difference in daily iron target.
+
+Why does ICMR differ? Because Indian women, particularly vegetarians, have significantly higher rates of iron deficiency than the global average. WHO standards are designed for global populations. ICMR standards account for the Indian dietary baseline.
+
+For our users — urban Indian women, many of whom are vegetarians — the ICMR values are clinically more appropriate.
+
+My recommendation: use ICMR. But this is a clinical decision and I want Shristi and Arjun to confirm.
+
+Kabir
+
+---
+Date: June 13, 2025 — 9:00 AM
+From: arjun@nutrivana.in
+To: kabir@nutrivana.in, shristi@nutrivana.in, ananya@nutrivana.in
+Subject: Re: ICMR vs WHO — which values do we use for prenatal presets?
+
+Kabir,
+
+Use ICMR. Here is the technical and clinical reasoning.
+
+The 35mg ICMR iron recommendation for Indian pregnant women is based on NFHS (National Family Health Survey) data showing that approximately 54% of Indian women are anaemic before pregnancy. WHO's 27mg recommendation assumes a global average baseline that does not apply to our user population.
+
+For B12: Indian vegetarians have significantly higher B12 deficiency rates than the global average because B12 primarily comes from animal products. The ICMR 2.8mcg vs WHO 2.6mcg difference reflects this population-specific risk.
+
+Using WHO values for Indian users would be technically compliant with international standards but clinically inappropriate for our specific user base.
+
+One technical implementation note: I will store both WHO and ICMR values in the database. The prenatal preset uses ICMR by default. If we ever want to add a country-selector in V3 we can switch the source. Future-proof.
+
+Arjun
+
+---
+Date: June 13, 2025 — 11:30 AM
+From: ananya@nutrivana.in
+To: kabir@nutrivana.in, arjun@nutrivana.in, shristi@nutrivana.in
+Subject: Re: ICMR vs WHO — which values do we use for prenatal presets?
+
+I want to add real-world validation to this decision.
+
+With permission from one of our interviewees (Meghna, 28, second trimester, Mumbai), I asked to see the prescription her OB-GYN gave her for prenatal nutrition.
+
+Her doctor prescribed: Iron 45mg, Folate 5mg (5000mcg — this is a prescription dose for a diagnosed deficiency, much higher than maintenance), Calcium 1000mg, Vitamin D 1000 IU.
+
+Her iron prescription is actually higher than both ICMR and WHO because she has a diagnosed deficiency. The ICMR value (35mg) is the recommended intake for healthy Indian pregnant women. A user with a diagnosed deficiency would be under specific medical supervision with higher targets.
+
+This confirms: ICMR values are the right defaults for healthy Indian pregnant women. Users with diagnosed deficiencies will have doctor-prescribed custom targets that differ — and they can override the presets in our app manually.
+
+ICMR confirmed from user validation.
+
+Ananya
+
+---
+Date: June 14, 2025 — 9:30 AM
+From: shristi@nutrivana.in
+To: kabir@nutrivana.in, arjun@nutrivana.in, ananya@nutrivana.in
+Subject: Re: ICMR vs WHO — which values do we use for prenatal presets?
+
+ICMR confirmed. Use ICMR values for all prenatal presets.
+
+One additional decision: should we tell users which guidelines we are using? I am thinking yes — a small line on the prenatal result screen: Targets based on ICMR guidelines for Indian pregnant women. This is transparency and it is also a differentiation signal. No competitor using WHO defaults can say this.
+
+Kabir — add this attribution line to the design.
+
+Arjun — document the WHO vs ICMR value table in the technical spec under Data Sources. If we ever face questions about our clinical basis we want this documented.
+
+Shristi
+
+---
+Date: June 14, 2025 — 11:00 AM
+From: kabir@nutrivana.in
+To: shristi@nutrivana.in, arjun@nutrivana.in, ananya@nutrivana.in
+Subject: Re: ICMR vs WHO — which values do we use for prenatal presets?
+
+Attribution line added to the prenatal result screen design. Exact copy: Targets based on ICMR dietary guidelines for Indian pregnant women.
+
+Arjun — I will send you the updated Figma spec. The attribution line appears below the nutrient targets in a smaller grey font. Visible but not visually dominant — information for users who want it, not a distraction for users who do not.
+
+One note for the marketing team: the ICMR attribution is a genuine competitive differentiator. No nutrition app I am aware of specifically uses ICMR guidelines for Indian users. We should mention this explicitly in any press coverage about the prenatal feature.
+
+Kabir

@@ -1,0 +1,94 @@
+Date: May 29, 2025 — 3:00 PM
+From: arjun@nutrivana.in
+To: shristi@nutrivana.in
+Subject: 38% drop-off confirmed — this changes everything
+
+Shristi,
+
+Funnel analysis complete. The hypothesis from NPS open text is confirmed by data.
+
+The funnel:
+Account creation → profile complete: 94%
+Profile complete → calorie goal start: 87%
+Calorie goal start → calorie goal complete: 62%
+Goal complete → first food log: 89%
+
+38% of users who START the calorie goal setup do not complete it.
+
+But that is not the most important number. Here is the breakdown of what happens to the 38%:
+
+12% return and complete within 7 days.
+8% use the app without goals — they browse the food database, search for foods, but never commit to tracking. Active but not tracking.
+80% churn within 3 days.
+
+That last number. 80% of the 38% churn within 3 days. Which means calorie goal abandonment accounts for approximately 30% of ALL user churn. Not 30% of a small segment. 30% of every user we ever acquire.
+
+I also measured time spent at each step. Completers spend an average of 4.2 minutes on the EER form. Abandoners spend 1.8 minutes. They are not trying hard and giving up. They see the form, make a decision in under 2 minutes that it is not for them, and leave.
+
+The solution is not a better explanation of EER. The solution is making EER invisible.
+
+Arjun
+
+---
+Date: May 29, 2025 — 4:30 PM
+From: shristi@nutrivana.in
+To: arjun@nutrivana.in, kabir@nutrivana.in
+Subject: Re: 38% drop-off confirmed — this changes everything
+
+Arjun, looping in Kabir because this directly affects his Sprint 12 design work.
+
+The 1.8 minute abandon time is the key insight. I want to make sure we all understand what it means.
+
+Users who abandon are not frustrated. They are not confused in a way that more explanation would fix. They make a fast judgement — this looks complicated, I do not want to deal with this — and they leave. You cannot fix that with a tooltip or a help video. You fix it by removing the thing that looks complicated.
+
+Kabir — your 3-question sketch from the Sprint 10 meeting is the right direction. The user never sees the EER formula. They answer 3 questions. The formula runs behind the scenes. They see only their personalised goal.
+
+How quickly can you have a Figma prototype ready for user testing?
+
+Shristi
+
+---
+Date: May 29, 2025 — 5:45 PM
+From: kabir@nutrivana.in
+To: shristi@nutrivana.in, arjun@nutrivana.in
+Subject: Re: 38% drop-off confirmed — this changes everything
+
+I have to be honest — seeing the 30% churn number is difficult.
+
+I designed the current EER onboarding. I knew it was detailed but I thought detailed meant thorough which I thought meant trustworthy. Users would see we took their goal calculation seriously. I did not consider that detailed could also mean intimidating.
+
+The 1.8 minute abandon data changes how I think about this. Thorough is only valuable if the user stays long enough to experience it. If they leave in 1.8 minutes they experienced nothing except the decision to leave.
+
+Figma prototype for the 3-question flow by June 13. I want to test it specifically with users who previously abandoned the current flow before showing it to anyone else. That is the only validation that matters — can we get the abandoners to complete?
+
+Kabir
+
+---
+Date: May 30, 2025 — 9:00 AM
+From: shristi@nutrivana.in
+To: kabir@nutrivana.in, arjun@nutrivana.in
+Subject: Re: 38% drop-off confirmed — this changes everything
+
+Kabir — the honest reaction you just described is exactly right. Thorough is only valuable if the user stays long enough to experience it. That sentence should be in the Sprint 12 design brief.
+
+The goal of the new design is not to be less thorough. The goal is to make the thoroughness invisible. The EER formula does not disappear — it still runs, it is still accurate. The user just never has to understand it to benefit from it.
+
+June 13 for the Figma prototype. Testing with previous abandoners is the right call — Ananya can identify them from the funnel data.
+
+Shristi
+
+---
+Date: May 30, 2025 — 10:30 AM
+From: arjun@nutrivana.in
+To: shristi@nutrivana.in, kabir@nutrivana.in
+Subject: Re: 38% drop-off confirmed — this changes everything
+
+One technical note for the design brief.
+
+The 3-question inputs map directly to EER formula parameters. Health goal → weight_goal_type. Activity description → activity_multiplier. Current weight → current_weight_kg. Age and gender can default to statistical averages at first and the user is prompted to complete their profile after seeing their initial goal.
+
+The accuracy impact of defaulting age and gender: approximately 150-250 calories from the true EER value for most users. This is much smaller than the 500+ calorie error from GOAL-BUG-002. And when they complete their profile the recalculation brings them to exact accuracy.
+
+We are not sacrificing accuracy. We are deferring the collection of two data points to a moment when the user has already seen the value of the product.
+
+Arjun

@@ -1,0 +1,93 @@
+Date: May 21, 2025 — 4:30 PM
+From: ananya@nutrivana.in
+To: shristi@nutrivana.in, arjun@nutrivana.in
+Subject: NPS results — 34. What the open text is telling us.
+
+Shristi, Arjun,
+
+NPS survey results from today. 187 responses, 23% response rate.
+
+NPS score: 34
+Promoters (9-10): 41% of respondents — 77 users
+Passives (7-8): 52% — 97 users
+Detractors (0-6): 7% — 13 users
+
+The score is below our Q2 target of 35. Not by much but below.
+
+The open text is more useful than the score. Most requested features: custom recipe builder (47 mentions), barcode scanner (31 mentions), simplified goal setup (23 mentions).
+
+The 23 mentions of goal setup are the most strategically important. Here is what users actually said — not a summary, exact phrases:
+
+"The calorie goal setup was confusing. What is EER? I had to Google it."
+
+"Setting up my macros took too long. I almost gave up."
+
+"The goal setup felt like it was designed for nutritionists not regular people."
+
+"I completed the setup but I am not sure I did it right."
+
+That last one is worth reading again. A user who COMPLETED the setup is not sure they did it right. We have a comprehension problem not just a completion problem.
+
+Ananya
+
+---
+Date: May 21, 2025 — 5:15 PM
+From: shristi@nutrivana.in
+To: ananya@nutrivana.in, arjun@nutrivana.in
+Subject: Re: NPS results — 34. What the open text is telling us.
+
+The last quote is the most important thing in this email.
+
+A user who completed the setup is not sure they did it right. That means even our successful onboarding is leaving users with low confidence in their goals. Low confidence in your goals means you trust the app less. Less trust means lower retention.
+
+The NPS score of 34 is a symptom. The confidence problem is the disease.
+
+Arjun — is there any way to see in the data whether users who express uncertainty about their goals (e.g. users who revisit the goal settings screen multiple times in the first week) have lower Day 7 retention than users who set goals and never revisit?
+
+Shristi
+
+---
+Date: May 22, 2025 — 9:00 AM
+From: arjun@nutrivana.in
+To: shristi@nutrivana.in, ananya@nutrivana.in
+Subject: Re: NPS results — 34. What the open text is telling us.
+
+Ran the goal settings revisit analysis overnight.
+
+Users who revisit goal settings screen in first 7 days: 34% of all users who completed goal setup. Of those users Day 7 retention is 38% vs 46% for users who set goals once and never revisited. Users who revisit goal settings are 8 percentage points less likely to return on Day 7.
+
+Your instinct is confirmed. Goal setup uncertainty is not just a UX problem — it is a retention driver. Users who are not confident in their goals disengage from the app sooner.
+
+One more finding: the 23 NPS respondents who mentioned goal setup complexity are all in the passives category (7-8 score) or detractors (0-6). None are promoters. Users who found goal setup hard are not our advocates regardless of how much they like everything else.
+
+Arjun
+
+---
+Date: May 22, 2025 — 10:30 AM
+From: ananya@nutrivana.in
+To: shristi@nutrivana.in, arjun@nutrivana.in
+Subject: Re: NPS results — 34. What the open text is telling us.
+
+The goal revisit retention gap (38% vs 46%) is the clearest quantification of the problem we have had so far.
+
+One thing worth adding: the custom recipe builder and barcode scanner requests (47 and 31 mentions) are feature requests. The goal setup complexity mention (23 mentions) is a friction point. Feature requests improve a product. Friction point removals transform it.
+
+If we ship barcode scanner and NPS goes up by 2 points because 47 users get something they wanted — that is an improvement. If we fix goal setup complexity and 38% of churning users now complete onboarding — that is a transformation.
+
+The Sprint 11 funnel analysis will give us the exact number. But I am already confident the goal setup fix is the highest ROI change we can make.
+
+Ananya
+
+---
+Date: May 22, 2025 — 11:45 AM
+From: shristi@nutrivana.in
+To: ananya@nutrivana.in, arjun@nutrivana.in
+Subject: Re: NPS results — 34. What the open text is telling us.
+
+Ananya — the distinction between feature requests and friction point removals is exactly right. Save that framing. It belongs in the Q3 roadmap document and the next investor update.
+
+Feature requests improve the product for users who already love it. Friction removal converts the users who would have loved it but never stayed long enough to find out.
+
+Simplified onboarding is confirmed as Sprint 12 top priority. Sprint 11 will give us the funnel data to quantify the exact opportunity. I already know what it will say.
+
+Shristi
