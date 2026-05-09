@@ -1,0 +1,127 @@
+Date: June 29, 2025 — 8:00 PM
+From: shristi@nutrivana.in
+To: arjun@nutrivana.in, priya@nutrivana.in,
+kabir@nutrivana.in, ananya@nutrivana.in
+Subject: Q2 OKR review — what we are proud of and what we missed
+
+Team,
+
+Q2 OKR review is written. Sharing the honest summary before the formal document goes to Ravi tomorrow.
+
+What we are proud of:
+MAU 3,512 — exceeded 3,000 target. 315% growth in 2 months with zero paid acquisition.
+Custom foods 847 — exceeded 200 target. Every one of those entries is a user solving the Indian food gap problem.
+Pregnant women segment confirmed at 3.1x engagement — the most unexpected and most important discovery of the quarter.
+Prenatal presets shipped — fastest feature adoption in project history. 87 seconds average setup time.
+Simplified onboarding shipped — 84% vs 61% completion.
+
+What we missed:
+Day 7 retention 47% vs 50% target — missed by 3 points. The cause is known (38% goal setup drop-off), the fix is in motion (simplified onboarding just shipped), and the A/B test shows we would have hit 51% if simplified onboarding had shipped earlier. This is not a product-market fit problem. It is a timing problem.
+Earned media: 0 articles. Complete failure. The pregnant women story and the Indian food gap data are newsworthy — we just never pitched them properly.
+
+One honest reflection: the FoodDiaryContext story and the simplified onboarding story follow the same pattern. Both were known problems that we acted on too slowly. FoodDiaryContext was identified as needed in Sprint 4 and deferred three times. Simplified onboarding had user signals in the March interviews and we did not act until June. Both cost us users and retention.
+
+Q3 principle: when we identify a problem — from user research or from data or from engineering concerns — we act within one sprint, not three months later.
+
+Shristi
+
+---
+Date: June 30, 2025 — 8:30 AM
+From: arjun@nutrivana.in
+To: shristi@nutrivana.in, priya@nutrivana.in,
+kabir@nutrivana.in, ananya@nutrivana.in
+Subject: Re: Q2 OKR review — what we are proud of and what we missed
+
+Shristi,
+
+One technical addition for the review that explains how the retention improvement from 34% to 47% actually happened.
+
+Three technical decisions drove it:
+
+1. FoodDiaryContext implemented in Sprint 7. Before this the diary and analysis showed different data. After this they synced instantly. Users who had been confused by inconsistent numbers started trusting the data.
+
+2. Codebase audit in Sprint 8. Created 3 shared utility functions. Eliminated an entire class of "fix one place miss another" bugs. Reduced bug rate in Sprints 9-13 significantly.
+
+3. Simplified onboarding in Sprint 12-13. 84% vs 61% completion. 47.3% vs 43.1% Day 7 retention for users who went through the simplified flow.
+
+None of these are features. None appear in the roadmap as user value. All three are invisible improvements that made the existing product work correctly. The retention improvement from 34% to 47% came from fixing things, not adding things.
+
+Arjun
+
+---
+Date: June 30, 2025 — 10:00 AM
+From: ananya@nutrivana.in
+To: shristi@nutrivana.in, arjun@nutrivana.in
+Subject: Re: Q2 OKR review — what we are proud of and what we missed
+
+Arjun's point about invisible improvements driving retention is the most important product insight of Q2 for me.
+
+We spent 6 months building features. The retention improvement came from fixing infrastructure (FoodDiaryContext), cleaning up the codebase (shared utilities), and removing friction (simplified onboarding). None of those are features a user would ask for. All of them are things users experience without knowing they exist.
+
+For the Q3 OKR I want to propose that we dedicate at least one sprint explicitly to invisible improvements — bug fixing, performance, onboarding friction. Not as a tax on feature sprints. As a strategic investment.
+
+Ananya
+
+---
+Date: June 30, 2025 — 5:00 PM
+From: shristi@nutrivana.in
+To: ravi.kapoor@seedfund.in
+Subject: Nutrivana Q2 update — 3,512 MAU, NPS 41, and a strategic discovery
+
+Ravi,
+
+Q2 is closed. Here are the numbers and the story.
+
+MAU: 3,512 (target was 3,000 — exceeded by 17%)
+NPS: 41 (target was 40 — exceeded)
+Day 7 retention: 47% (target was 50% — missed by 3 points)
+Custom Indian food entries: 847 (target was 200 — exceeded 4x)
+App Store: 4.2
+
+The retention miss: the cause is identified. 38% of users were abandoning the goal setup step. We confirmed this in May and shipped the fix (simplified onboarding) in June. A/B test shows 84% completion vs 61% and 47.3% vs 43.1% Day 7 retention for users in the simplified flow. Q3 opens with this foundation.
+
+The strategic discovery: pregnant women. 3.1x engagement. 81.8% Day 7 retention. We did not build for them. They found us because our deep micronutrient tracking serves their doctor-prescribed prenatal targets better than any competitor. We shipped prenatal presets on June 26 — trimester-specific targets based on ICMR Indian guidelines, not generic WHO international standards. 87 seconds average setup time.
+
+Q3 priorities: serve pregnant women explicitly, grow through maternal health channels, ship custom recipe builder (top NPS request), continue retention improvement with simplified onboarding as standard.
+
+Shristi
+
+---
+Date: June 30, 2025 — 8:30 PM
+From: ravi.kapoor@seedfund.in
+To: shristi@nutrivana.in
+Subject: Re: Nutrivana Q2 update — 3,512 MAU, NPS 41, and a strategic discovery
+
+Shristi,
+
+Strong quarter. The retention miss at 47% vs 50% is less important than the fact that you identified the cause and shipped the fix in the same quarter. That is the right product management behaviour.
+
+On pregnant women: three questions.
+
+One — is the 3.1x engagement number stable or is it driven by a small number of highly unusual users in the 11-user cohort?
+
+Two — what stops MyFitnessPal or HealthifyMe from copying the ICMR prenatal presets once they see you doing it?
+
+Three — 26 million pregnancies per year in India. If pregnant women self-refer at the rate your interviews suggest, what is the realistic Q3 MAU contribution from this segment?
+
+I want to understand the defensibility and the growth potential before we make this the centrepiece of the Q3 strategy.
+
+Ravi
+
+---
+Date: June 30, 2025 — 10:00 PM
+From: shristi@nutrivana.in
+To: ravi.kapoor@seedfund.in
+Subject: Re: Nutrivana Q2 update — 3,512 MAU, NPS 41, and a strategic discovery
+
+Ravi,
+
+Three honest answers.
+
+On stability: the 3.1x engagement holds across the 11 identified users who have now been active for 1-8 weeks. It is not driven by one outlier. The lowest-engaged pregnant user in the cohort is still at 2.1x overall average. The pattern is consistent.
+
+On defensibility: MFP or HealthifyMe could copy the ICMR values in a week — the data is public. What they cannot copy easily is the deep micronutrient tracking infrastructure we built over 6 months. Adding ICMR prenatal presets to an app with shallow micronutrient support is like putting a better label on an empty bottle. The presets are only valuable if the underlying tracking actually works. Ours does.
+
+On Q3 MAU from this segment: I will not give you a projected number I cannot defend. What I can tell you is that 2 of our 5 interviewed pregnant users have already referred Nutrivana to their pregnancy WhatsApp groups unprompted. Once we add explicit marketing through OB-GYN offices and maternal health communities I expect the referral rate to be significantly higher. I will have real numbers from the first month of explicit marketing by end of July.
+
+Shristi

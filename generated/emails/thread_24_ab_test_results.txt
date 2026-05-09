@@ -1,0 +1,94 @@
+Date: June 18, 2025 — 5:00 PM
+From: arjun@nutrivana.in
+To: shristi@nutrivana.in
+Subject: A/B test results — simplified onboarding works
+Shristi,
+
+First week A/B test results. I want you to see these before the team meeting.
+
+Control group (original EER onboarding, 50% of new users):
+Goal setup completion rate: 61%
+Average time to complete: 4.2 minutes
+Day 7 retention: 43.1%
+
+Simplified group (3-question flow, 50% of new users):
+Goal setup completion rate: 84%
+Average time to complete: 1.9 minutes
+Day 7 retention: 47.3%
+
+The completion rate improvement (23 percentage points) is what we expected. The time improvement (2.3 minutes faster) is what we hoped for. But the Day 7 retention improvement (4.2 percentage points) is what makes this a business decision not just a UX decision.
+
+Users who complete the simplified onboarding do not just set up their goals faster — they are more likely to come back a week later. The confidence they get from a smooth setup experience carries through to their first week of tracking.
+
+Recommend shipping to 100% of new users in Sprint 13.
+
+Arjun
+
+---
+Date: June 18, 2025 — 6:30 PM
+From: shristi@nutrivana.in
+To: arjun@nutrivana.in, priya@nutrivana.in, kabir@nutrivana.in, ananya@nutrivana.in
+Subject: Re: A/B test results — simplified onboarding works
+Everyone needs to see this.
+
+84% vs 61% completion. 47.3% vs 43.1% Day 7 retention.
+
+To put the retention difference in real numbers: if we get 1,000 new users next month, the simplified onboarding means 432 of them return on Day 7 instead of 431. Wait — that math is wrong. Let me redo this.
+
+At 1,000 new users:
+Simplified (84% complete setup): 840 complete setup.
+Of those 840, 47.3% return Day 7 = 398 users.
+
+Control (61% complete setup): 610 complete setup.
+Of those 610, 43.1% return Day 7 = 263 users.
+
+The simplified onboarding generates 135 more returning users per 1,000 acquired. At 3,500 MAU and growing that is not a small number.
+
+Shipping to 100% of users in Sprint 13. No more A/B test.
+
+Shristi
+
+---
+Date: June 19, 2025 — 8:30 AM
+From: priya@nutrivana.in
+To: shristi@nutrivana.in, arjun@nutrivana.in, kabir@nutrivana.in, ananya@nutrivana.in
+Subject: Re: A/B test results — simplified onboarding works
+The 1.9 minutes number is the one that means the most to me personally. I built both versions. I know exactly how much simpler the 3-question flow is to implement than the EER form.
+
+1.9 minutes means a user answered 3 questions, saw their personalised goal, and was ready to start logging. In under 2 minutes. On the first time they ever used the app.
+
+The EER form at 4.2 minutes means a user spent 4 minutes trying to understand what EER means, what activity level applies to them, why the numbers matter. And 38% of them gave up before they even got to that point.
+
+I am glad we built the right thing. Even if it took us until Sprint 12 to build it.
+
+Priya
+
+---
+Date: June 19, 2025 — 9:45 AM
+From: ananya@nutrivana.in
+To: shristi@nutrivana.in, arjun@nutrivana.in, priya@nutrivana.in, kabir@nutrivana.in
+Subject: Re: A/B test results — simplified onboarding works
+One connection worth making.
+
+The May NPS survey had 23 users mention goal setup complexity in their open text. Those users were all in the passives or detractors category — none were promoters. All of them were using the original EER onboarding (the A/B test did not start until June).
+
+If those same users had gone through the simplified onboarding they would have completed setup in 1.9 minutes with confidence. The May NPS open text complaint about goal setup complexity would not exist. Some of those passives might have become promoters.
+
+This is the data trail: March user interviews mentioned goal setup confusion → May NPS open text confirmed 23 users frustrated → May funnel analysis showed 38% drop-off → June A/B test proved the fix works. Every step of the research pointed to the same problem. We just needed all the data to act with confidence.
+
+Ananya
+
+---
+Date: June 19, 2025 — 11:00 AM
+From: shristi@nutrivana.in
+To: arjun@nutrivana.in, priya@nutrivana.in, kabir@nutrivana.in, ananya@nutrivana.in
+Subject: Re: A/B test results — simplified onboarding works
+Ananya — the data trail you just described is going in the Q2 OKR review.
+
+March user interviews → May NPS → May funnel analysis → June A/B test. Four separate data sources all pointing to the same problem. The research methodology worked exactly as it should. We identified the problem early (March), quantified it (May), and solved it (June).
+
+The only honest criticism is that we should have moved faster between the March signal and the May quantification. The user interviews mentioned goal setup confusion in March. We did not run the funnel analysis until May. Those two months cost us some users who would have stayed if we had simplified earlier.
+
+That lesson goes in the retrospective: when user research identifies a friction point, do not wait for funnel data to confirm what users already told you directly.
+
+Shristi

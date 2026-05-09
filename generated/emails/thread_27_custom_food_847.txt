@@ -1,0 +1,97 @@
+---
+Date: June 3, 2025 — 11:00 AM
+From: shristi@nutrivana.in
+To: ananya@nutrivana.in, arjun@nutrivana.in
+Subject: Custom food report — 847 entries. All Indian foods.
+
+Ananya, Arjun,
+
+The custom food feature adoption report draft is ready. I want to share the headline data before it goes to the full team.
+
+847 total custom food entries created by users.
+312 unique food names.
+Top 3: Chapati 234 entries, Dal Tadka 187, Homemade Paneer 156.
+
+Now for the number that puts this in context.
+
+847 entries means approximately 847 times a user opened the app, could not find their food in the USDA database, and instead of giving up — chose to create it themselves. 847 individual acts of fixing the Indian food gap problem that every other app left unsolved.
+
+The average user who creates a custom food has logged their food approximately 22 times before creating the custom food. They committed to the app first. Then they personalised it.
+
+Arjun — I want to verify one thing before I share this with Ravi. Is the 847 number total entries (counting each user who logged Chapati separately) or unique food database entries?
+
+Shristi
+
+---
+Date: June 3, 2025 — 12:30 PM
+From: arjun@nutrivana.in
+To: shristi@nutrivana.in, ananya@nutrivana.in
+Subject: Re: Custom food report — 847 entries. All Indian foods.
+
+Shristi,
+
+Important data quality clarification.
+
+847 is the total number of custom_foods records in the database. This counts each user's version of a food separately. If 234 users created "Chapati" then Chapati contributes 234 to the 847.
+
+312 is the number of unique food names (case-insensitive, after basic normalisation like "chapati" and "Chapati" merged).
+
+Both numbers are true and both tell different stories.
+
+847 (total entries) tells the story of usage volume — how many times users chose to personalise rather than give up. This is the retention story.
+
+312 (unique food names) tells the story of database enrichment — how many new foods our users have collectively added to the Nutrivana food universe. This is the Indian food gap story.
+
+For Ravi I would cite both: 847 custom food entries created by users covering 312 unique Indian foods not in the USDA database.
+
+One more data point: the top 20 custom foods by entry count. I checked. Not a single Western food in the top 20. Every one of the 20 most frequently created custom foods is an Indian food. Chapati, Dal Tadka, Paneer, Masala Oats, Poha, Rajma, Chole, Upma, Paratha, Idli, Sabzi, Khichdi, Biryani (home version), Dosa (home version), Sambar, Aloo Sabzi, Palak Paneer, Chana Masala, Moong Dal, Raita.
+
+Arjun
+
+---
+Date: June 3, 2025 — 1:45 PM
+From: ananya@nutrivana.in
+To: shristi@nutrivana.in, arjun@nutrivana.in
+Subject: Re: Custom food report — 847 entries. All Indian foods.
+
+The top 20 list is a press story by itself.
+
+Every single food on that list was missing from MyFitnessPal, HealthifyMe, and the USDA database. Every single one is a staple of Indian home cooking. And every single one now exists in Nutrivana because a real user took the time to create it.
+
+I want to use this list in two places:
+
+First: the App Store screenshots. One of our current screenshots shows a generic food diary. Replace it with a screenshot of the food search results for Chapati showing 234 user entries. This tells the Indian food gap story in a single image.
+
+Second: any press pitch. The top 20 list is the lead. Not "we solve the Indian food gap." But "here are the 20 most common foods Indian users have created that no other app had."
+
+Ananya
+
+---
+Date: June 4, 2025 — 9:00 AM
+From: shristi@nutrivana.in
+To: ananya@nutrivana.in, arjun@nutrivana.in
+Subject: Re: Custom food report — 847 entries. All Indian foods.
+
+Ananya — App Store screenshot update approved. Use the Chapati search result screenshot. That single image communicates the entire Nutrivana value proposition.
+
+One framing note for the press pitch: the story is not that Nutrivana solved the Indian food gap by adding Indian foods to a database. Every app could do that. The story is that Nutrivana built a feature that let Indian users solve the Indian food gap themselves — and they did. 847 times. Without being asked.
+
+That is the difference between a product company and a database company. Users adding their own foods because the product makes it easy and worth their time — that is the story.
+
+Shristi
+
+---
+Date: June 4, 2025 — 10:30 AM
+From: ananya@nutrivana.in
+To: shristi@nutrivana.in, arjun@nutrivana.in
+Subject: Re: Custom food report — 847 entries. All Indian foods.
+
+Shristi — that framing is exactly right and I am stealing it word for word for the press pitch.
+
+Not that we solved the Indian food gap. That we built the tool that let Indian users solve it themselves. And they did. 847 times.
+
+Two other data points I want to add to the press pitch that came from the retention analysis. Users who create custom foods retain at 2.3x the rate of users who do not. And users who create their first custom food within the first 3 sessions retain at 41% Day 30 vs 15% for users who never create one.
+
+The Indian food gap is not just a discoverability feature. It is the retention engine.
+
+Ananya

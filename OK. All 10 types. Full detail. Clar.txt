@@ -1,0 +1,2087 @@
+OK. All 10 types. Full detail. Clarification → Filter → Ranking for each.
+
+---
+
+## Universal Safety Filters (Applied to ALL types, stating once)
+
+These come from merged profile (profile + chat overrides). Applied before any ranking happens.
+
+| Profile field | Filter action |
+|---|---|
+| is_pregnant = true | Remove pregnancy-unsafe products |
+| is_lactating = true | Remove lactation-unsafe products |
+| is_eczema = true | Remove eczema-incompatible products |
+| is_rosacea = true | Remove rosacea-incompatible products |
+| is_psoriasis = true | Remove psoriasis-incompatible products |
+| is_fungal_acne = true | Remove fungal-acne-incompatible products |
+| is_fragrance_sensitive = true | Remove fragrance allergen products |
+| is_acne_prone = true | Remove high comedogenicity products |
+| is_sensitive = true | Remove sensitive-skin-incompatible products |
+| Always | Remove banned ingredient products |
+| Always | Remove GHS toxic products |
+
+Every type below starts AFTER these have already eliminated unsafe products.
+
+---
+
+## Scoring Formula Reference (Stating once)
+
+```
+CONCERN PATH (when concern is available):
+  n = number of concerns being evaluated
+  per_concern_total = sum of concern_scores (each max 1.0)
+  concern_ratio = per_concern_total / n
+  scaled_concern = concern_ratio × 3.0 → max 3.0
+  relevance = scaled_concern + bonus (0-0.5) + concern_synergy (0-0.5) → max 4.0
+
+INGREDIENT PATH (when ingredient stated, no concern):
+  concentration_multiplier of requested ingredient (0-1.0)
+  scaled_concentration = concentration_multiplier × 3.0 → max 3.0
+  relevance = scaled_concentration + bonus (0-0.5) + ingredient_synergy (0-0.5) → max 4.0
+
+recommendation_score = relevance (0-4) + safety_score (0-4) + formulation_score (0-2) → max ~10.0
+```
+
+---
+
+## Type 1 — Concern Only
+
+**Example:** "Give me something for my fine lines"
+
+### Clarification
+
+Check 1: Is safety profile complete from onboarding? If yes, no safety questions needed. If any field is unknown, ask.
+
+Check 2: No product type given. This will return a mixed bag — serums, moisturizers, treatments all jumbled together. Ask one question:
+
+> "Are you looking for a serum, moisturizer, cleanser, or any type?"
+
+If user says "anything" or doesn't care, proceed without product type filter. Results will be mixed but valid.
+
+Total clarification: 0-1 questions.
+
+### Filters
+
+- Universal safety filters (merged profile)
+- Per concern score for fine_lines > 0 (must have some efficacy for this concern)
+- Product type filter ON if user answered the clarification, OFF if user said "anything"
+
+### Ranking
+
+**Path:** Concern path
+
+```
+n = 1 (only fine_lines)
+per_concern_total = concern_score for fine_lines
+concern_ratio = concern_score / 1
+scaled_concern = concern_ratio × 3.0
+relevance = scaled_concern + bonus + synergy_for_fine_lines
+
+recommendation_score = relevance + safety_score + formulation_score
+```
+
+Sort descending. Top 3-5. Max 2 per brand.
+
+---
+
+## Type 2 — Concern + Product Type
+
+**Example:** "Give me a serum for fine lines"
+
+### Clarification
+
+Check 1: Safety profile complete? If yes, no questions.
+
+Check 2: We have concern AND product type. Enough to recommend.
+
+Total clarification: 0 questions. Recommend directly.
+
+### Filters
+
+- Universal safety filters
+- Product type = serum
+- Per concern score for fine_lines > 0
+
+### Ranking
+
+**Path:** Concern path
+
+```
+n = 1
+per_concern_total = concern_score for fine_lines
+concern_ratio = concern_score / 1
+scaled_concern = concern_ratio × 3.0
+relevance = scaled_concern + bonus + synergy_for_fine_lines
+
+recommendation_score = relevance + safety_score + formulation_score
+```
+
+Sort descending. Top 3-5. Max 2 per brand.
+
+---
+
+## Type 3 — Concern + Product Type + Budget
+
+**Example:** "Serum for pigmentation under 500"
+
+### Clarification
+
+None. Everything needed is stated.
+
+### Filters
+
+- Universal safety filters
+- Product type = serum
+- Price ≤ 500
+- Per concern score for pigmentation > 0
+
+### Ranking
+
+**Path:** Concern path
+
+```
+n = 1
+per_concern_total = concern_score for pigmentation
+concern_ratio = concern_score / 1
+scaled_concern = concern_ratio × 3.0
+relevance = scaled_concern + bonus + synergy_for_pigmentation
+
+recommendation_score = relevance + safety_score + formulation_score
+```
+
+Sort descending. Top 3-5. Max 2 per brand.
+
+---
+
+## Type 4 — Ingredient Only
+
+**Example:** "I want something with niacinamide"
+
+### Clarification
+
+Check 1: Safety profile complete? If not, ask.
+
+Check 2: No product type. Same problem as Type 1 — mixed results. Ask:
+
+> "Are you looking for a serum, moisturizer, or any type?"
+
+Total clarification: 0-1 questions.
+
+### Filters
+
+- Universal safety filters
+- Product must contain niacinamide
+- Product type filter ON if user answered clarification, OFF if user said "anything"
+
+### Ranking
+
+**Path:** Ingredient path
+
+```
+concentration_multiplier = based on (approx_concentration / required_concentration) of niacinamide
+scaled_concentration = concentration_multiplier × 3.0
+relevance = scaled_concentration + bonus + ingredient_synergy (query-time LLM)
+
+recommendation_score = relevance + safety_score + formulation_score
+```
+
+**Query-time LLM step:** After filtering, take top ~10 products sorted by concentration_multiplier as rough rank. Call LLM for each:
+
+```
+Input: target ingredient = niacinamide
+       other active ingredients in product = [list]
+Output: synergy score (strong/moderate/weak → same numeric scale as concern synergy)
+```
+
+Re-rank with synergy included. Pick top 3-5. Max 2 per brand.
+
+---
+
+## Type 5 — Ingredient + Product Type
+
+**Example:** "Give me a niacinamide serum"
+
+### Clarification
+
+None. Ingredient + product type is enough.
+
+### Filters
+
+- Universal safety filters
+- Product type = serum
+- Product must contain niacinamide
+
+### Ranking
+
+**Path:** Ingredient path
+
+```
+concentration_multiplier of niacinamide
+scaled_concentration = concentration_multiplier × 3.0
+relevance = scaled_concentration + bonus + ingredient_synergy (query-time LLM)
+
+recommendation_score = relevance + safety_score + formulation_score
+```
+
+Same LLM synergy step as Type 4. Sort descending. Top 3-5. Max 2 per brand.
+
+---
+
+## Type 6 — Ingredient + Product Type + Budget
+
+**Example:** "PDRN exosome serum under 1000"
+
+### Clarification
+
+None. Everything stated.
+
+### Filters
+
+- Universal safety filters
+- Product type = serum
+- Price ≤ 1000
+- Product must contain PDRN/exosome ingredients
+
+### Ranking
+
+**Path:** Ingredient path
+
+```
+concentration_multiplier of PDRN/exosome ingredient
+scaled_concentration = concentration_multiplier × 3.0
+relevance = scaled_concentration + bonus + ingredient_synergy (query-time LLM)
+
+recommendation_score = relevance + safety_score + formulation_score
+```
+
+Sort descending. Top 3-5. Max 2 per brand.
+
+**Edge case:** If very few products match (PDRN exosome is niche), return whatever matches with a note: "I found 2 PDRN exosome serums under ₹1000 in our database." Don't pad with non-matching products.
+
+---
+
+## Type 7 — Product Type Only
+
+**Example:** "Suggest a good moisturizer"
+
+### Clarification
+
+Check 1: Safety profile complete? If not, ask.
+
+Check 2: No concern, no ingredient. This is the vaguest query. Two options:
+
+Option A — Ask: "What do you want this moisturizer to help with — hydration, acne, anti-aging, or general skin health?"
+
+Option B — Don't ask, use profile concerns.
+
+I think Option B is better. User has profile concerns from onboarding. Use those. If user wanted something specific they would have said it.
+
+Total clarification: 0 questions. Use profile concerns.
+
+### Filters
+
+- Universal safety filters
+- Product type = moisturizer
+
+### Ranking
+
+**Path:** Concern path, using ALL profile concerns
+
+```
+n = number of profile concerns (1 to 3)
+per_concern_total = sum of concern_scores for all profile concerns
+concern_ratio = per_concern_total / n
+scaled_concern = concern_ratio × 3.0
+relevance = scaled_concern + bonus + synergy_for_profile_concerns
+
+recommendation_score = relevance + safety_score + formulation_score
+```
+
+Sort descending. Top 3-5. Max 2 per brand.
+
+---
+
+## Type 8 — Product Type + Skin Context
+
+**Example:** "Moisturizer for my oily combination skin"
+
+### Clarification
+
+Same as Type 7. No concern or ingredient given. Use profile concerns.
+
+Total clarification: 0 questions.
+
+### Filters
+
+- Universal safety filters
+- Product type = moisturizer
+- Skin type mismatch becomes a HARD FILTER here (user explicitly stated oily combination — remove products that don't suit this skin type)
+
+### Ranking
+
+**Path:** Concern path, using profile concerns
+
+```
+n = number of profile concerns
+per_concern_total = sum of concern_scores for profile concerns
+concern_ratio = per_concern_total / n
+scaled_concern = concern_ratio × 3.0
+relevance = scaled_concern + bonus + synergy_for_profile_concerns
+
+recommendation_score = relevance + safety_score + formulation_score
+```
+
+Note: skin_type_mismatch is already handled as a filter. It's not in ranking anymore because mismatched products are already eliminated.
+
+Sort descending. Top 3-5. Max 2 per brand.
+
+---
+
+## Type 9 — Concern + Safety Context in Chat
+
+**Example:** "I have rosacea and I'm pregnant and lactating and sensitive skin, suggest something for hyperpigmentation"
+
+### Clarification
+
+Check 1: Safety is fully stated in the chat itself. No safety questions.
+
+Check 2: No product type. But user has given a LOT of info already. Asking another question might be annoying. Two options:
+
+Option A — Ask product type.
+
+Option B — Don't ask, return mixed types. User can refine in follow-up.
+
+I'd go with Option B here. User has been verbose. Let them see results.
+
+Total clarification: 0 questions.
+
+### Profile Merge
+
+Override these fields from chat:
+- is_rosacea = true
+- is_pregnant = true
+- is_lactating = true
+- is_sensitive = true
+
+Everything else stays from profile.
+
+### Filters
+
+- Universal safety filters with overridden values (this will be strict — pregnancy + lactation + rosacea + sensitive eliminates many products)
+- Per concern score for hyperpigmentation > 0
+
+### Ranking
+
+**Path:** Concern path
+
+```
+n = 1
+per_concern_total = concern_score for hyperpigmentation
+concern_ratio = concern_score / 1
+scaled_concern = concern_ratio × 3.0
+relevance = scaled_concern + bonus + synergy_for_hyperpigmentation
+
+recommendation_score = relevance + safety_score + formulation_score
+```
+
+Sort descending. Top 3-5. Max 2 per brand.
+
+---
+
+## Type 10 — Product Type + Skin Context + Season
+
+**Example:** "Moisturizer for oily combination skin for winter"
+
+### Clarification
+
+Same as Type 8. Use profile concerns.
+
+Total clarification: 0 questions.
+
+### Filters
+
+- Universal safety filters
+- Product type = moisturizer
+- Skin type mismatch = hard filter for oily combination
+
+### Ranking
+
+**Path:** Concern path, using profile concerns
+
+```
+n = number of profile concerns
+per_concern_total = sum of concern_scores for profile concerns
+concern_ratio = per_concern_total / n
+scaled_concern = concern_ratio × 3.0
+relevance = scaled_concern + bonus + synergy_for_profile_concerns
+
+recommendation_score = relevance + safety_score + formulation_score
+```
+
+**Season handling:** You don't have seasonal data stored per product. So season does NOT affect filtering or ranking. Instead, the response generator LLM uses season when explaining recommendations:
+
+> "This moisturizer has heavier emollients like shea butter and squalane which provide extra barrier protection in winter when oily-combination skin can get dehydrated from cold air."
+
+If you later want to add seasonal scoring, you'd need a new data field per product. But for now, LLM explanation handles it.
+
+Sort descending. Top 3-5. Max 2 per brand.
+
+---
+
+## Summary Table
+
+| Type | Clarify? | Extra Filters | Ranking Path | Concern Source |
+|---|---|---|---|---|
+| 1. Concern only | Product type? | concern > 0 | Concern | Stated (1) |
+| 2. Concern + type | No | type + concern > 0 | Concern | Stated (1) |
+| 3. Concern + type + budget | No | type + price + concern > 0 | Concern | Stated (1) |
+| 4. Ingredient only | Product type? | contains ingredient | Ingredient | None (LLM synergy) |
+| 5. Ingredient + type | No | type + contains ingredient | Ingredient | None (LLM synergy) |
+| 6. Ingredient + type + budget | No | type + price + contains ingredient | Ingredient | None (LLM synergy) |
+| 7. Type only | No, use profile | type | Concern | Profile (1-3) |
+| 8. Type + skin context | No, use profile | type + skin type hard filter | Concern | Profile (1-3) |
+| 9. Concern + safety chat | No | concern > 0 + overridden safety | Concern | Stated (1) |
+| 10. Type + skin + season | No, use profile | type + skin type hard filter | Concern | Profile (1-3) |
+
+---
+
+## Where It Could Break
+
+**1. Ingredient not found in DB:** User asks for "bakuchiol serum" but no product in your DB has bakuchiol tagged. Filter returns 0 products. Response: "I don't have any bakuchiol serums in our database right now."
+
+**2. Too many safety filters eliminate everything:** User is pregnant + lactating + rosacea + eczema + sensitive + fragrance sensitive + acne prone. Very few products survive all filters. If 0 results, respond: "With your safety requirements, I couldn't find products that meet all criteria. Would you like me to show the closest matches with a note on which safety concern they don't fully meet?"
+
+**3. Concern stated + ingredient stated:** User says "niacinamide serum for pigmentation." This is a combination — I haven't listed this type. Which path? I'd say: filter by contains niacinamide + product type serum + concern_score_pigmentation > 0, then rank using **concern path** (pigmentation efficacy) because concern is the stronger signal. Concentration of niacinamide acts as an additional ranking boost, not the primary signal. Does this feel right?
+
+**4. Multiple concerns stated:** User says "serum for acne and pigmentation." Use concern path with n=2. Both concerns contribute to per_concern_total. Scale as usual.
+
+**5. Concern + ingredient + product type + budget + safety:** User says "I'm pregnant, give me a niacinamide serum for pigmentation under 500." All slots filled. Filter: safety with pregnant override + serum + contains niacinamide + price ≤ 500 + concern_score_pigmentation > 0. Rank: concern path (pigmentation). Everything works, most constrained query, probably fewest results.
+
+---
+
+Does this hold up? Check each type against what you know about your data and scoring. Where does it break?
+
+
+
+
+
+
+OK. Let me walk through with real numbers.
+
+---
+
+## How concern_score is calculated (your existing formula, restating for clarity)
+
+For ONE concern in ONE product, you look at every ingredient that addresses that concern:
+
+```
+Per ingredient:
+  effective_value = tier_value × concentration_multiplier
+
+  tier_value:
+    Tier 1 = 1.0
+    Tier 2 = 0.7
+    Tier 3 = 0.4
+
+  concentration_multiplier:
+    ≥100% of required = 1.0
+    70-99% = 0.8
+    50-69% = 0.6
+    30-49% = 0.4
+    <30% = 0.2
+    No data = 0.4
+
+concern_score = min(sum of all effective_values / 1.0, 1.0)
+```
+
+---
+
+## Example Product: "GlowMax Serum"
+
+This serum contains niacinamide, tranexamic acid, retinol, hyaluronic acid.
+
+**For the concern "pigmentation":**
+
+```
+Niacinamide: Tier 1 for pigmentation, concentration = 5% (required = 5%, so ≥100%)
+  effective_value = 1.0 × 1.0 = 1.0
+
+Tranexamic acid: Tier 1 for pigmentation, concentration = 3% (required = 5%, so 50-69%)
+  effective_value = 1.0 × 0.6 = 0.6
+
+Retinol: Tier 2 for pigmentation, concentration = 0.5% (required = 0.5%, so ≥100%)
+  effective_value = 0.7 × 1.0 = 0.7
+
+Hyaluronic acid: NOT relevant for pigmentation, not counted.
+
+sum of effective_values = 1.0 + 0.6 + 0.7 = 2.3
+concern_score for pigmentation = min(2.3 / 1.0, 1.0) = 1.0 (capped)
+```
+
+**For the concern "fine_lines":**
+
+```
+Retinol: Tier 1 for fine_lines, concentration = 0.5% (required = 0.5%, so ≥100%)
+  effective_value = 1.0 × 1.0 = 1.0
+
+Niacinamide: Tier 3 for fine_lines, concentration = 5% (required = 5%, so ≥100%)
+  effective_value = 0.4 × 1.0 = 0.4
+
+Tranexamic acid: NOT relevant for fine_lines.
+Hyaluronic acid: NOT relevant for fine_lines.
+
+sum = 1.0 + 0.4 = 1.4
+concern_score for fine_lines = min(1.4 / 1.0, 1.0) = 1.0 (capped)
+```
+
+**For the concern "acne":**
+
+```
+Niacinamide: Tier 2 for acne, concentration = 5% (required = 10% for acne, so 50-69%)
+  effective_value = 0.7 × 0.6 = 0.42
+
+Others: not relevant for acne.
+
+sum = 0.42
+concern_score for acne = min(0.42 / 1.0, 1.0) = 0.42
+```
+
+**Bonus score (pre-computed):**
+
+GlowMax also has some efficacy for hydration (from hyaluronic acid) and dull skin (from niacinamide). These aren't the user's stated or profile concerns, but the product helps with them.
+
+```
+bonus concern "hydration": concern_score = min(sum of effective_values / 2.5, 1.0) = 0.6
+  weighted = 0.6 × 0.5 = 0.3
+
+bonus concern "dull_skin": concern_score = min(sum / 2.5, 1.0) = 0.4
+  weighted = 0.4 × 0.5 = 0.2
+
+bonus_score = min((0.3 + 0.2) / 2.5, 0.5) = min(0.2, 0.5) = 0.2
+```
+
+**Synergy (pre-computed per concern):**
+
+```
+For pigmentation: niacinamide + tranexamic acid = strong synergy → 0.16
+For fine_lines: retinol + niacinamide = moderate synergy → 0.10
+For acne: no synergy pairs → 0
+```
+
+**Safety score:** 3.2 out of 4.0 (pre-computed)
+
+**Formulation score:** 1.6 out of 2.0 (pre-computed)
+
+---
+
+## Now Let's Run The Relevance Calculation
+
+### Scenario A: User gives 1 concern — "serum for pigmentation"
+
+```
+n = 1
+per_concern_total = concern_score for pigmentation = 1.0
+concern_ratio = 1.0 / 1 = 1.0
+scaled_concern = 1.0 × 3.0 = 3.0
+synergy = 0.16 (for pigmentation)
+bonus = 0.2
+
+relevance = 3.0 + 0.2 + 0.16 = 3.36 out of 4.0
+
+recommendation_score = 3.36 + 3.2 + 1.6 = 8.16 out of 10.0
+```
+
+### Scenario B: User gives 2 concerns — "serum for pigmentation and fine lines"
+
+```
+n = 2
+per_concern_total = pigmentation (1.0) + fine_lines (1.0) = 2.0
+concern_ratio = 2.0 / 2 = 1.0
+scaled_concern = 1.0 × 3.0 = 3.0
+synergy = 0.16 (pigmentation) + 0.10 (fine_lines) = 0.26
+bonus = 0.2
+
+relevance = 3.0 + 0.2 + 0.26 = 3.46 out of 4.0
+
+recommendation_score = 3.46 + 3.2 + 1.6 = 8.26 out of 10.0
+```
+
+### Scenario C: User gives 2 concerns — "serum for pigmentation and acne"
+
+```
+n = 2
+per_concern_total = pigmentation (1.0) + acne (0.42) = 1.42
+concern_ratio = 1.42 / 2 = 0.71
+scaled_concern = 0.71 × 3.0 = 2.13
+synergy = 0.16 (pigmentation) + 0 (acne) = 0.16
+bonus = 0.2
+
+relevance = 2.13 + 0.2 + 0.16 = 2.49 out of 4.0
+
+recommendation_score = 2.49 + 3.2 + 1.6 = 7.29 out of 10.0
+```
+
+---
+
+## What This Tells Us — Let Me Check If The Behavior Is Correct
+
+**Scenario A vs B:**
+
+Same product. In A, user asked for pigmentation only. Score = 8.16. In B, user asked for pigmentation AND fine lines. Score = 8.26.
+
+The product is excellent for BOTH concerns (1.0 each). So it scored slightly higher when 2 concerns were asked because synergy added more (0.26 vs 0.16). The scaled_concern is the same (3.0) because the ratio is perfect in both cases (1.0/1 = 2.0/2 = 1.0).
+
+**Does this feel right?** A product that perfectly addresses both your concerns scores slightly higher than when you only ask about one. That seems correct.
+
+**Scenario A vs C:**
+
+Same product. In A, pigmentation only, score = 8.16. In C, pigmentation + acne, score = 7.29.
+
+The product is great for pigmentation (1.0) but weak for acne (0.42). When user asks for both, the weak acne score DRAGS DOWN the overall score via the ratio: (1.0 + 0.42) / 2 = 0.71 instead of 1.0/1 = 1.0.
+
+**Does this feel right?** This is the key question. The product is excellent for one of the two things the user asked for, and mediocre for the other. Should it be penalized?
+
+In one sense yes — a product that only solves half your problems should rank lower than one that solves both.
+
+But in another sense — if another product scores 0.7 for pigmentation and 0.7 for acne, its ratio would be (0.7 + 0.7) / 2 = 0.7, scaled = 2.1. That's LOWER than GlowMax's 2.13. So GlowMax still wins even though it's weak on acne, because its pigmentation score is so high. The math actually handles this reasonably.
+
+**BUT** — what if there's a product that scores 0.8 for pigmentation and 0.8 for acne? Ratio = 0.8, scaled = 2.4. That beats GlowMax at 2.13, even though GlowMax is better for pigmentation specifically. The "balanced across both concerns" product wins over the "amazing at one, weak at other" product.
+
+**Is that the behavior you want?** Or should the product that's amazing at one concern be able to win even if it's weak at the other?
+
+---
+
+## Now The Ingredient Path Example
+
+### Scenario D: User says "niacinamide serum" (no concern)
+
+GlowMax has niacinamide at 5%, required concentration = 5%.
+
+```
+concentration_multiplier = 1.0 (≥100% of required)
+scaled_concentration = 1.0 × 3.0 = 3.0
+bonus = 0.2 (same pre-computed number, doesn't change)
+ingredient_synergy = LLM computes at query time
+
+LLM input: 
+  Target ingredient: niacinamide
+  Other actives: tranexamic acid, retinol, hyaluronic acid
+LLM output: 
+  niacinamide + tranexamic acid = strong → 0.16
+  niacinamide + retinol = moderate → 0.10
+  ingredient_synergy = 0.26 (or capped at whatever max you set)
+
+Let's say ingredient_synergy = 0.26 (same scale as concern synergy, max 0.5)
+
+relevance = 3.0 + 0.2 + 0.26 = 3.46 out of 4.0
+
+recommendation_score = 3.46 + 3.2 + 1.6 = 8.26 out of 10.0
+```
+
+### Compare With Another Product: "BasicGlow Toner"
+
+Has niacinamide at 2% (required 5%, so 30-49%), no other notable actives.
+
+```
+concentration_multiplier = 0.4
+scaled_concentration = 0.4 × 3.0 = 1.2
+bonus = 0.1 (weak product overall)
+ingredient_synergy = 0 (no synergy partners)
+
+relevance = 1.2 + 0.1 + 0 = 1.3 out of 4.0
+
+recommendation_score = 1.3 + 2.8 + 1.0 = 5.1 out of 10.0
+```
+
+GlowMax (8.26) ranks far above BasicGlow (5.1). Makes sense — better concentration, better synergy, better formulation, better safety.
+
+---
+
+## Does This All Hold Up?
+
+The specific things I want you to check:
+
+1. Is the concern_score calculation I showed matching what you actually compute? The `min(sum / 1.0, 1.0)` part.
+
+2. Is the scaling logic (divide by n, multiply by 3.0) creating the right behavior for 1 vs 2 vs 3 concerns?
+
+3. For ingredient path, does using concentration_multiplier × 3.0 as the primary signal feel right?
+
+4. Does the bonus calculation I showed match your actual bonus formula?
+
+5. Is synergy max ~0.5 correct or is it structured differently?
+
+
+
+full single product recommnedation system logic
+
+# SkinGuru — Single Product Recommendation System: Complete Logic
+
+## Table of Contents
+
+1. System Overview
+2. User Profile (Onboarding Data)
+3. Pre-Computation Strategy
+4. Query Types (All 10)
+5. Intent Extraction
+6. Profile Merging
+7. Clarification Logic
+8. Filtering
+9. Scoring
+10. Ranking
+11. Response Generation
+12. n8n Workflow Structure
+13. Edge Cases
+
+---
+
+## 1. System Overview
+
+A chat-based skincare product recommendation system. User sends a free-form message. The system understands the request, filters unsafe products, scores remaining products, ranks them, and returns top 3-5 recommendations with score explanation, ingredient story, and product justification.
+
+Architecture: **ONE pipeline for all query types.**
+
+```
+USER MESSAGE
+    ↓
+LLM 1: Intent Extractor
+    ↓
+Profile Merge
+    ↓
+Clarification Check
+    ↓ NO → Ask 1-2 questions → STOP
+    ↓ YES → continue
+    ↓
+Supabase: Filter
+    ↓
+    ├─ Concern path: Code Node: Scoring → Code Node: Ranking
+    │
+    └─ Ingredient path: Code Node: Rough sort → LLM 2: Ingredient Synergy → Code Node: Scoring → Code Node: Ranking
+    ↓
+LLM 3: Response Generator
+    ↓
+RESPONSE TO USER
+```
+
+---
+
+## 2. User Profile (Onboarding Data)
+
+Captured during 7-step onboarding. Stored in `user_profiles` table in Supabase.
+
+**Step 1 — Skin Type:**
+- Oily, Dry, Normal, Combination
+- Saved to: `user_profiles.skin_type`
+
+**Step 2 — Skin Sensitivity:**
+- Acne Prone, Sensitive Skin, Fragrance Sensitive
+- Saved to: `is_acne_prone`, `is_sensitive`, `is_fragrance_sensitive`
+
+**Step 3 — Skin Conditions:**
+- Eczema, Rosacea, Psoriasis, Fungal Acne
+- Saved to: `is_eczema`, `is_rosacea`, `is_psoriasis`, `is_fungal_acne`
+
+**Step 4 — Pregnancy/Lactation:**
+- Pregnant, Breastfeeding
+- Saved to: `is_pregnant`, `is_lactating`
+
+**Step 5 — Skin Concerns (max 3):**
+- Acne, Acne Marks, Blackheads, Bumpy Skin, Enlarged Pores, Oil Control, Pigmentation, Anti Aging, Wrinkles, Loss of Firmness, Early Aging, Dehydrated Skin, Dull Skin, Dark Circles, Redness, Uneven Skin Tone
+- Saved to: `user_profiles.skin_concerns` array
+
+**Note:** No allergen field captured in onboarding.
+
+---
+
+## 3. Pre-Computation Strategy
+
+Run your existing LLM scoring pipeline on ALL products ONCE. Store results in Supabase. At query time, just look up stored numbers and do simple math.
+
+### 3A. Efficacy Pre-Computation
+
+**Per Product × ALL 16 Concerns:**
+
+Every product gets scored against ALL 16 concerns, not just user concerns. There is no user at pre-computation time. Store in `product_concern_scores` table:
+
+```
+product_id
+concern_key (e.g., 'pigmentation', 'acne', 'fine_lines', ... all 16)
+concern_score (0-1.0)
+synergy_score (0-~0.16)
+```
+
+This means for 500 products × 16 concerns = 8,000 rows.
+
+At query time, we just LOOK UP whichever concerns are relevant for this user's query.
+
+**How concern_score is computed (existing formula):**
+
+For each ingredient in the product that addresses the concern:
+
+```
+effective_value = tier_value × concentration_multiplier
+
+Tier values:
+  Tier 1 = 1.0 (strong research, highly positive)
+  Tier 2 = 0.7 (moderate research)
+  Tier 3 = 0.4 (few/mixed research)
+
+Concentration multipliers:
+  ≥100% of required = 1.0
+  70-99% = 0.8
+  50-69% = 0.6
+  30-49% = 0.4
+  <30% = 0.2
+  No data = 0.4
+
+concern_score = min(sum of all effective_values / 1.0, 1.0)
+```
+
+**Synergy (per product × per concern, ALL 16 concerns):**
+
+- Max ~0.16 per concern
+- Based on strong/moderate/weak synergy between ingredient pairs for that concern
+- Computed by LLM which takes all active ingredients and finds combination mechanisms for the concern
+- Pre-computed for ALL 16 concerns, not just user's concerns
+
+**Bonus score (per product, NOT per concern):**
+
+For each bonus concern (concerns the product's ingredients are best at, regardless of any user):
+
+```
+bonus_concern_score = min(sum of effective_values / 2.5, 1.0)
+weighted = bonus_concern_score × 0.5
+bonus_score = min(sum of all weighted / 2.5, 0.5)
+```
+
+Bonus is based on whatever concerns the product's ingredients are best at. NOT tied to user profile. Pre-computed once per product.
+
+Store in `product_scores` table:
+
+```
+product_id
+bonus_score (0-0.5)
+```
+
+### 3B. Safety Pre-Computation (Product-Side Flags Only)
+
+Store in `product_safety_flags` table:
+
+```
+product_id
+
+-- STOP flags (product facts)
+pregnancy_safe (boolean)
+lactation_safe (boolean)
+eczema_verdict (text: none/worsens/triggers)
+rosacea_verdict (text: none/triggers/worsens)
+psoriasis_impact (text: none/worsens)
+fungal_acne_risk (text: none/problematic)
+fungal_problematic (boolean)
+fungal_malassezia (boolean)
+worst_comedogenicity_rating (integer 0-5)
+is_carcinogenic (boolean)
+is_mutagenic (boolean)
+dermal_severity (text: none/mild/moderate/severe/critical)
+has_banned_ingredient (boolean)
+
+-- Deduction flags (product facts)
+has_fragrance (boolean)
+has_eu26_allergen (boolean)
+has_preservative_allergen (boolean)
+has_sun_sensitivity (boolean)
+has_high_irritation (boolean)
+has_medium_irritation (boolean)
+avoid_for_skin_types (text array)
+interaction_worst_case (text: none/caution-medium/caution-high/avoid)
+interaction_deduction (numeric: 0, -0.2, or -0.5)
+
+-- Synergy offset data
+has_irritation_synergy_pairs (boolean)
+irritation_synergy_offset (numeric)
+has_interaction_synergy_pairs (boolean)
+interaction_synergy_offset (numeric)
+```
+
+All product facts. Computed once. Never change per user.
+
+**Fully pre-computable parameters (same for ALL users, can be tagged once):**
+- P8: GHS toxicity (carcinogenic/mutagenic/dermal severity)
+- P9: Banned ingredients
+- P11: Preservative allergen flag + deduction (-0.2)
+- P15: Interaction worst_case + deduction + synergy offset
+
+### 3C. Formulation Pre-Computation
+
+Store in `product_scores` table:
+
+```
+product_id
+formulation_score (0-2.0)
+```
+
+Composed of: structural completeness, preservation design, stability engineering, filler ratio, product type detection.
+
+100% product-dependent. Zero user dependency. Computed once.
+
+### 3D. Ingredient Concentration Data
+
+Store in `product_ingredients` table:
+
+```
+product_id
+ingredient_name
+approx_concentration (numeric)
+required_concentration (numeric)
+concentration_multiplier (numeric 0-1.0)
+```
+
+Already exists from concentration estimation workflow.
+
+---
+
+## 4. Query Types (All 10)
+
+| Type | Example | Signals Available |
+|------|---------|-------------------|
+| 1 | "Give me something for my fine lines" | concern |
+| 2 | "Give me a serum for fine lines" | concern + product_type |
+| 3 | "Serum for pigmentation under 500" | concern + product_type + budget |
+| 4 | "I want something with niacinamide" | ingredient |
+| 5 | "Give me a niacinamide serum" | ingredient + product_type |
+| 6 | "PDRN exosome serum under 1000" | ingredient + product_type + budget |
+| 7 | "Suggest a good moisturizer" | product_type |
+| 8 | "Moisturizer for my oily combination skin" | product_type + skin_context |
+| 9 | "I have rosacea, I'm pregnant, suggest for hyperpigmentation" | concern + safety_context |
+| 10 | "Moisturizer for oily combination skin for winter" | product_type + skin_context + season |
+
+**Additional combinations:**
+- Concern + ingredient: "niacinamide serum for pigmentation" → filter by ingredient, rank by concern path
+- Multiple concerns: "serum for acne and pigmentation" → concern path with n=2
+- Everything stated: "niacinamide serum for pigmentation under 500, I'm pregnant" → all filters active, concern path
+
+---
+
+## 5. Intent Extraction (LLM 1)
+
+LLM reads user message + conversation history. Outputs structured JSON:
+
+```json
+{
+  "concern": "pigmentation",
+  "ingredient": "niacinamide",
+  "product_type": "serum",
+  "budget": 500,
+  "skin_type_override": "dry",
+  "safety_overrides": {
+    "pregnant": true,
+    "rosacea": true
+  },
+  "has_enough_to_recommend": true,
+  "ranking_path": "concern"
+}
+```
+
+All fields are null if not mentioned by user.
+
+**Ranking path decision:**
+- User mentioned a concern (with or without ingredient) → `"concern"`
+- User mentioned only ingredient, no concern → `"ingredient"`
+- User mentioned neither (just product type) → `"concern"` (will use profile concerns)
+
+---
+
+## 6. Profile Merging
+
+**Rule: Whatever the user says in chat, override ONLY those fields. Keep everything else from the stored profile.**
+
+Example:
+
+```
+Profile: skin_type=oily, is_pregnant=false, is_rosacea=false, is_sensitive=true
+Chat: "I'm pregnant and have rosacea"
+
+Merged: skin_type=oily (unchanged), is_pregnant=TRUE (overridden),
+        is_rosacea=TRUE (overridden), is_sensitive=true (unchanged)
+```
+
+---
+
+## 7. Clarification Logic
+
+**One decision tree. Maximum 1-2 questions.**
+
+```
+Step 1: Is the merged safety profile complete?
+        ├─ NO → Ask about missing safety fields
+        └─ YES → continue
+
+Step 2: Do I have at least ONE of: concern, ingredient, product type?
+        ├─ NO → Ask: "What are you looking for?"
+        └─ YES → continue
+
+Step 3: Recommend.
+```
+
+**When to ask about product type (optional):**
+- Type 1 (concern only): "Are you looking for a serum, moisturizer, or any type?"
+- Type 4 (ingredient only): Same question
+
+**When NOT to clarify:**
+- User gave concern + product type → enough
+- User gave ingredient + product type → enough
+- User gave concern + ingredient → enough
+- User gave safety context + concern → enough
+
+---
+
+## 8. Filtering
+
+**ONE filter pipeline. Same for all query types. Each filter is ON or OFF depending on available data.**
+
+### 8A. Universal Safety Filters (Always applied, from merged profile)
+
+Binary — product is IN or OUT:
+
+| # | Parameter | Condition to REMOVE product |
+|---|-----------|----------------------------|
+| P1 | Pregnancy | `pregnancy_safe = false` AND `is_pregnant = true` |
+| P2 | Lactation | `lactation_safe = false` AND `is_lactating = true` |
+| P3 | Eczema | `eczema_verdict = worsens/trigger/triggers` AND `is_eczema = true` |
+| P4 | Rosacea | `rosacea_verdict = triggers/worsens` AND `is_rosacea = true` |
+| P5 | Psoriasis | `psoriasis_impact = worsens` AND `is_psoriasis = true` |
+| P6 | Fungal acne | (`fungal_acne_risk = problematic` OR `fungal_problematic = true`) AND `is_fungal_acne = true` |
+| P7 | Comedogenicity | Rating ≥ 4 AND (`is_acne_prone = true` OR `skin_type = oily`) |
+| P8 | GHS toxicity | `is_carcinogenic = true` OR `is_mutagenic = true` OR `dermal_severity IN (severe, critical)` |
+| P9 | Banned | `has_banned_ingredient = true` |
+| P10 | Fragrance | Has fragrance/EU26 AND `is_fragrance_sensitive = true` |
+| P11 | Irritation | Has high irritation AND `is_sensitive = true` |
+
+P8 and P9 apply to ALL users regardless of profile.
+
+### 8B. Optional Filters (Only applied if user stated in chat)
+
+| # | Filter | Condition |
+|---|--------|-----------|
+| 12 | Product type | Must match stated type |
+| 13 | Contains ingredient | Must contain stated ingredient |
+| 14 | Budget | Price ≤ stated budget |
+| 15 | Skin type match | `avoid_for_skin_types` must NOT contain stated skin type (only when explicitly stated in chat) |
+| 16 | Concern efficacy | `concern_score > 0` for stated concern (only when concern is stated) |
+
+---
+
+## 9. Scoring
+
+**Scoring is a separate Code Node. It computes a number for every product that survived filtering. No sorting. No selection. Just attaches scores.**
+
+### 9A. The Recommendation Score Formula
+
+```
+recommendation_score = relevance + safety_score + formulation_score
+```
+
+### 9B. Relevance — Concern Path
+
+Used when: user stated a concern, OR user stated concern + ingredient, OR no concern/ingredient stated (use profile concerns as fallback).
+
+```
+n = number of concerns being evaluated
+per_concern_total = sum of concern_scores for those n concerns
+                    (each concern_score is max 1.0, pre-computed, just looked up)
+
+concern_ratio = per_concern_total / n
+scaled_concern = concern_ratio × 3.0       → max 3.0
+
+synergy_total = sum of synergy_scores for those n concerns
+                (each pre-computed, just looked up)
+
+relevance = scaled_concern                  (0-3.0)
+          + bonus_score                     (0-0.5, pre-computed, looked up)
+          + synergy_total                   (0-~0.5)
+                                            → max ~4.0
+```
+
+**Why scaling:** A product scoring 0.9/1.0 for one concern has concern_ratio = 0.9, scaled = 2.7. A product scoring 0.9 + 0.8 for two concerns has concern_ratio = 0.85, scaled = 2.55. The single-concern product scores slightly higher on scaled_concern because it's a better ratio. BUT the two-concern product gets more synergy (synergy for both concerns), and if it covers both well, total relevance can be higher. Products covering multiple concerns well are rewarded through the combination of scaled_concern + more synergy.
+
+**Which concerns go into the calculation:**
+
+| Scenario | Concerns used |
+|----------|---------------|
+| User stated 1 concern | That 1 concern |
+| User stated 2 concerns | Those 2 concerns |
+| User stated 3 concerns | Those 3 concerns |
+| User stated concern + ingredient | Stated concern (ingredient handled by filter) |
+| No concern, no ingredient (just product type) | All profile concerns (1-3) |
+
+### 9C. Relevance — Ingredient Path
+
+Used when: user stated an ingredient but NO concern.
+
+**This path requires ingredient synergy to be computed FIRST (by LLM 2) before scoring can happen.**
+
+```
+concentration_multiplier of requested ingredient (pre-computed per product)
+  ≥100% of required = 1.0
+  70-99% = 0.8
+  50-69% = 0.6
+  30-49% = 0.4
+  <30% = 0.2
+
+scaled_concentration = concentration_multiplier × 3.0    → max 3.0
+
+relevance = scaled_concentration                          (0-3.0)
+          + bonus_score                                   (0-0.5, pre-computed)
+          + ingredient_synergy                            (0-0.5, from LLM 2)
+                                                          → max ~4.0
+```
+
+**Ingredient synergy (LLM 2, query-time):**
+
+Same LLM that computes concern synergy in your existing pipeline, but different mode:
+
+```
+Concern synergy (existing, pre-computed):
+  Input: active ingredients + concern
+  Output: synergy score for that concern
+
+Ingredient synergy (new, query-time):
+  Input: target ingredient + other active ingredients in product
+  Output: overall synergy of target ingredient with rest of formulation
+  Same scale: strong/moderate/weak → same numeric values → max 0.5
+```
+
+### 9D. Safety Score — Query-Time Computation
+
+Uses pre-computed product flags + merged user profile. Same parameters serve as BOTH filter (harsh end) and score (mild end).
+
+**Starting score: 4.0**
+
+Deductions applied to surviving products only:
+
+| Parameter | Condition | Deduction |
+|-----------|-----------|-----------|
+| P1 Pregnancy (partial) | Has H361 GHS + user pregnant | -0.8 |
+| P7 Comedogenicity | Rating 2-3 + user acne_prone/oily | -0.5 |
+| P7 Comedogenicity | Rating 1 + user acne_prone/oily (only if no 2+ found) | -0.2 |
+| P10 Fragrance | Has fragrance + user IS fragrance_sensitive | -0.3 |
+| P10 Fragrance | Has fragrance + user NOT fragrance_sensitive | -0.2 |
+| P11 Preservative | Has preservative allergen (all users) | -0.2 |
+| P12 Sun sensitivity | Sun-sensitizing + user HAS pigmentation concern | -0.3 |
+| P12 Sun sensitivity | Sun-sensitizing + NO pigmentation concern | 0 (info only) |
+| P13 Irritation | Sensitive user + high irritation | -0.2 |
+| P13 Irritation | Sensitive user + only medium irritation | -0.1 |
+| P14 Skin type mismatch | `avoid_for_skin_types` matches user skin_type | -0.3 |
+| P15 Interactions | `worst_case = avoid` | -0.5 |
+| P15 Interactions | `worst_case = caution-high/medium` | -0.2 |
+
+**Synergy offsets:**
+
+```
+Irritation synergy offset:
+  Soothing ingredient pairs compensate for irritating ones
+  → offsets P13 irritation deduction
+  Rule: both ingredients in pair must be NON-irritating
+
+Interaction synergy offset:
+  Synergistic pairs reduce interaction risk
+  → offsets P15 interaction deduction
+```
+
+**Safety score calculation:**
+
+```
+safety_score = 4.0
+  + pregnancy_deduction (0 or -0.8)
+  + comedogenicity_deduction (0, -0.2, or -0.5)
+  + fragrance_deduction (0, -0.2, or -0.3)
+  + preservative_deduction (0 or -0.2)
+  + sun_deduction (0 or -0.3)
+  + (irritation_deduction + irritation_synergy_offset)
+  + mismatch_deduction (0 or -0.3)
+  + (interaction_deduction + interaction_synergy_offset)
+
+Minimum = 0.0, Maximum = 4.0
+```
+
+**Score bands:**
+```
+4.0 = SAFE
+3.0 - 3.9 = LOW RISK
+2.0 - 2.9 = MODERATE RISK
+1.0 - 1.9 = HIGH RISK
+< 1.0 = UNSAFE
+```
+
+### 9E. Formulation Score
+
+Look up pre-computed `formulation_score` (0-2.0). No computation needed.
+
+### 9F. Final Score
+
+```
+recommendation_score = relevance + safety_score + formulation_score
+
+Max possible: ~4.0 + 4.0 + 2.0 = ~10.0
+```
+
+**Scoring node output:** Every product with its recommendation_score + all sub-scores (relevance, safety_score, formulation_score, concern breakdown, safety breakdown).
+
+---
+
+## 10. Ranking
+
+**Ranking is a separate Code Node. Takes scored products. Sorts and selects. No computation.**
+
+### 10A. Sort
+
+Sort all products by `recommendation_score` descending.
+
+### 10B. Brand Diversity
+
+Walk through the sorted list. Keep a counter per brand. If a brand already has 2 products in the result, skip the 3rd and take the next product from a different brand.
+
+```javascript
+const ranked = products.sort((a, b) => b.recommendation_score - a.recommendation_score);
+const result = [];
+const brandCount = {};
+
+for (const product of ranked) {
+  const brand = product.brand;
+  brandCount[brand] = (brandCount[brand] || 0) + 1;
+  
+  if (brandCount[brand] <= 2) {
+    result.push(product);
+  }
+  
+  if (result.length >= 5) break;
+}
+
+return result;
+```
+
+### 10C. Output
+
+Top 3-5 products with all their scores and data, ready for Response Generator.
+
+---
+
+## 11. Response Generation (LLM 3)
+
+For each recommended product, the LLM generates:
+
+**A. Match Score:**
+The recommendation_score in a readable format (e.g., 8.2/10). Builds user trust.
+
+**B. Ingredient Story:**
+Explains HOW key ingredients solve the user's concern or deliver the requested ingredient. Uses pre-computed data (tier, concentration, synergy) to explain mechanisms.
+
+Example: "This has 5% Niacinamide which inhibits melanin transfer to surface skin cells, directly targeting your pigmentation. It also has Tranexamic Acid at 3% which works synergistically — Niacinamide reduces new pigment production while Tranexamic Acid breaks down existing pigment clusters."
+
+**C. Why This Product:**
+Explains WHY this product ranked where it did. References safety, formulation, concentration adequacy.
+
+Example: "Ranked #1 because it has the highest concentration of proven actives for pigmentation among products safe for pregnancy. The formulation is well-preserved with good stability."
+
+**D. Safety Note:**
+If any safety deductions were applied, mention them.
+
+Example: "Note: Contains sun-sensitizing ingredients. Use sunscreen during the day."
+
+---
+
+## 12. n8n Workflow Structure
+
+```
+1. CHAT TRIGGER (webhook)
+      ↓
+2. MEMORY NODE (conversation buffer, last 10 messages)
+      ↓
+3. LLM NODE: Intent Extractor
+   Input: user message + chat history
+   Output: JSON with concern, ingredient, product_type, budget,
+           safety_overrides, skin_type_override, ranking_path,
+           has_enough_to_recommend
+      ↓
+4. SWITCH NODE: has_enough_to_recommend?
+   ├─ FALSE → LLM: generate clarifying question → respond → STOP
+   └─ TRUE → continue
+      ↓
+5. SUPABASE HTTP: Fetch user profile
+      ↓
+6. CODE NODE: Merge profile + chat overrides
+      ↓
+7. SUPABASE HTTP: Filter products
+   Takes all merged filter parameters.
+   Returns matching products with ALL pre-computed data:
+   - concern_scores for all 16 concerns
+   - synergy_scores for all 16 concerns
+   - bonus_score
+   - all safety flags
+   - formulation_score
+   - concentration data per ingredient
+   - product info (name, brand, price, type, image)
+      ↓
+8. SWITCH NODE: ranking_path?
+      ↓
+   ├─ "concern" path:
+   │     ↓
+   │  9a. CODE NODE: SCORING
+   │      For each product:
+   │      - Look up concern_scores for relevant concerns
+   │      - Compute scaled_concern = (sum / n) × 3.0
+   │      - Look up synergy for relevant concerns
+   │      - Look up bonus
+   │      - relevance = scaled_concern + bonus + synergy
+   │      - Compute safety_score (deductions from flags + merged profile)
+   │      - Look up formulation_score
+   │      - recommendation_score = relevance + safety + formulation
+   │      Output: all products with scores
+   │     ↓
+   │  10a. CODE NODE: RANKING
+   │       Sort by recommendation_score descending
+   │       Apply brand diversity (max 2 per brand)
+   │       Pick top 3-5
+   │       Output: final ranked list
+   │     ↓
+   │
+   └─ "ingredient" path:
+         ↓
+      9b. CODE NODE: ROUGH SORT
+          Sort by concentration_multiplier of requested ingredient descending
+          Pick top ~10 candidates
+          Output: top 10 products
+         ↓
+      10b. LLM NODE: INGREDIENT SYNERGY
+           For each of ~10 products:
+           Input: target ingredient + other active ingredients
+           Output: synergy score (same scale as concern synergy, max 0.5)
+         ↓
+      11b. CODE NODE: SCORING
+           For each product:
+           - scaled_concentration = concentration_multiplier × 3.0
+           - relevance = scaled_concentration + bonus + ingredient_synergy
+           - Compute safety_score (deductions from flags + merged profile)
+           - Look up formulation_score
+           - recommendation_score = relevance + safety + formulation
+           Output: all products with scores
+         ↓
+      12b. CODE NODE: RANKING
+           Sort by recommendation_score descending
+           Apply brand diversity (max 2 per brand)
+           Pick top 3-5
+           Output: final ranked list
+         ↓
+      ↓
+(both paths merge here)
+      ↓
+11. SWITCH NODE: Results found?
+    ├─ NO → LLM: "I couldn't find products matching that criteria.
+    │        Would you like to adjust your budget or try a different product type?"
+    └─ YES → continue
+      ↓
+12. LLM NODE: Response Generator
+    Input: top ranked products with all scores + user context
+    Output: match score + ingredient story + why this product + safety notes
+      ↓
+13. RESPOND to chat
+```
+
+### Follow-up Handling
+
+Memory Node keeps conversation context. Follow-ups:
+- "anything under 300?" → LLM extracts budget=300, re-runs with previous concern/ingredient
+- "what about for dry skin?" → LLM extracts skin_type_override=dry, re-runs
+- "why is product 2 better than 3?" → LLM generates comparison from stored scores
+- "suggest something for acne too" → New recommendation cycle with concern=acne
+
+---
+
+## 13. Edge Cases
+
+**13A. Ingredient not found in DB:**
+User asks for "bakuchiol serum" but no product has bakuchiol.
+→ Filter returns 0 products.
+→ "I don't have any bakuchiol serums in our database right now."
+
+**13B. Too many safety filters eliminate everything:**
+User is pregnant + lactating + rosacea + eczema + sensitive + fragrance sensitive + acne prone.
+→ Very few or 0 products survive.
+→ "With your safety requirements, I couldn't find products that meet all criteria. Would you like me to show the closest matches with a note on which safety concern they don't fully meet?"
+
+**13C. Concern + Ingredient stated together:**
+"niacinamide serum for pigmentation"
+→ Filter: product_type=serum + contains niacinamide + concern_score_pigmentation > 0
+→ Rank: CONCERN PATH (pigmentation efficacy). Ingredient handled by filter, not ranking.
+
+**13D. Multiple concerns stated:**
+"serum for acne and pigmentation"
+→ Concern path with n=2. Both concern_scores summed. Scaling divides by 2.
+→ Products addressing both well rank highest.
+
+**13E. Very few results after filtering:**
+Only 1-2 products match.
+→ Return what matches. Don't pad with non-matching products.
+→ "I found 2 products matching your criteria."
+
+**13F. Budget too low:**
+No products under stated budget.
+→ "I couldn't find products under ₹300 for this. The closest options start at ₹450. Would you like to see those?"
+
+**13G. Season mentioned:**
+No seasonal data stored per product. Season does NOT affect filtering or ranking.
+LLM Response Generator uses ingredient knowledge to explain seasonal suitability.
+→ "This moisturizer has heavier emollients like shea butter which provide extra barrier protection in winter."
+
+---
+
+## Summary: What Is Pre-Computed vs Query-Time
+
+### Pre-Computed (One-Time Batch Job)
+
+| Data | Scope | Storage |
+|------|-------|---------|
+| concern_score | Per product × ALL 16 concerns | `product_concern_scores` |
+| synergy_score | Per product × ALL 16 concerns | `product_concern_scores` |
+| bonus_score | Per product | `product_scores` |
+| formulation_score | Per product | `product_scores` |
+| concentration_multiplier | Per product × per ingredient | `product_ingredients` |
+| ALL safety flags | Per product | `product_safety_flags` |
+
+### Computed at Query Time
+
+| What | How | Why can't pre-compute |
+|------|-----|----------------------|
+| Which concerns to look up | From user query | Depends on what user asked |
+| scaled_concern | Code Node: (sum/n) × 3.0 | Depends on which/how many concerns |
+| safety_score | Code Node: 4.0 - deductions | Depends on merged user profile |
+| scaled_concentration | Code Node: multiplier × 3.0 | Depends on which ingredient user asked |
+| ingredient_synergy | LLM call | Can't pre-compute for every possible ingredient |
+| recommendation_score | Code Node: addition | Sum of above |
+
+### LLM Calls at Query Time
+
+| Call | When | Purpose |
+|------|------|---------|
+| LLM 1: Intent Extractor | Every query | Understand message, extract fields |
+| LLM 2: Ingredient Synergy | Only ingredient queries with no concern | Synergy of target ingredient with product |
+| LLM 3: Response Generator | Every query | Score explanation, ingredient story, justification |
+
+**Concern-based queries: 2 LLM calls (extractor + response).**
+**Ingredient-only queries: 3 LLM calls (extractor + synergy + response).**
+
+
+kind of user query solved wioth prioritization:
+
+Good thinking. Let me map out all possible post-recommendation queries.
+
+---
+
+## Post-Recommendation Query Types
+
+### Category A — Refinement (Modify the same recommendation)
+
+```
+A1. Budget filter: "anything under 300?"
+A2. Change product type: "show me moisturizers instead"
+A3. Change concern: "what about for acne instead?"
+A4. Add constraint: "without fragrance" / "something fragrance free"
+A5. Remove constraint: "show me even if not pregnancy safe"
+A6. More results: "show me more options"
+A7. Different brand: "anything from a Korean brand?" / "not Minimalist"
+```
+
+### Category B — Comparison
+
+```
+B1. Why this over that: "why is product 1 better than product 2?"
+B2. Side by side: "compare product 1 and 3"
+B3. Score breakdown: "why did product 2 score lower?"
+```
+
+### Category C — Deep Dive on Recommended Product
+
+```
+C1. Full ingredient list: "what's in product 2?"
+C2. Safety detail: "is product 1 really safe for pregnancy?"
+C3. Concentration detail: "how much niacinamide is in product 1?"
+C4. Specific concern: "will product 3 also help with my dark circles?"
+C5. Side effects: "any side effects of product 2?"
+```
+
+### Category D — Usage Questions
+
+```
+D1. When to use: "should I use this morning or night?"
+D2. How to use: "how do I apply this?"
+D3. Routine fit: "can I use this with my current retinol?"
+D4. Layering: "should this go before or after moisturizer?"
+D5. Results timeline: "how long before I see results?"
+D6. Frequency: "daily or alternate days?"
+```
+
+### Category E — General Skincare Knowledge
+
+```
+E1. Ingredient education: "why is niacinamide good for pigmentation?"
+E2. Concern education: "what causes hyperpigmentation?"
+E3. Ingredient interaction: "can I use vitamin C with niacinamide?"
+```
+
+### Category F — Purchase/Availability
+
+```
+F1. Where to buy: "where can I buy this?"
+F2. Price check: "is it available cheaper somewhere?"
+F3. Availability: "is it on Nykaa?"
+```
+
+### Category G — Rejection/Restart
+
+```
+G1. Reject all: "I don't like any of these, show different ones"
+G2. Past experience: "I've used product 1 before, it broke me out"
+G3. Completely new query: "actually suggest something for dark circles instead"
+```
+
+---
+
+## MVP Prioritization
+
+Let me rank by two factors: **how likely the user will ask this** and **how much value it adds to trust and conversion.**
+
+### Must Have (MVP)
+
+```
+A1 — Budget filter
+     WHY: Extremely common. "Under 500" is the most natural follow-up.
+     HOW: Re-run same query with budget added. Already designed in our system.
+
+A2 — Change product type  
+     WHY: "Show me serums instead of moisturizers" is very common.
+     HOW: Re-run same query with product_type changed.
+
+A6 — More results
+     WHY: User didn't like top 3, wants to see more.
+     HOW: Return next 3-5 from already scored list (don't re-compute).
+
+B1 — Why this over that
+     WHY: Builds trust. User wants to understand ranking.
+     HOW: LLM compares the two products' sub-scores (already available 
+          from scoring node output). No re-computation needed.
+
+C4 — Will this help with another concern
+     WHY: User has multiple concerns, wants to know if recommended 
+          product covers more than what was asked.
+     HOW: Look up pre-computed concern_score for that other concern.
+          Already in DB. Simple lookup + LLM explanation.
+
+G3 — Completely new query
+     WHY: User changes mind. Fresh recommendation cycle.
+     HOW: Treat as new Type 1-10 query. Already handled.
+```
+
+### Should Have (Post-MVP v1)
+
+```
+B3 — Score breakdown
+     WHY: Power users want transparency.
+     HOW: Display sub-scores (relevance, safety, formulation) 
+          from scoring output. Already computed.
+
+C2 — Safety detail
+     WHY: Users with pregnancy/conditions want reassurance.
+     HOW: Look up product_safety_flags. LLM explains which 
+          specific ingredients are safe/unsafe and why.
+
+D1 — When to use (morning/night)
+     WHY: Very common, builds practical value.
+     HOW: LLM knowledge based on product type and key ingredients.
+          No DB query needed. Pure LLM reasoning.
+
+D3 — Routine fit / can I use with X
+     WHY: Users already have products. Want compatibility check.
+     HOW: LLM ingredient interaction knowledge. If the other 
+          product is in your DB, can check interactions.
+
+A4 — Add constraint (fragrance free etc.)
+     WHY: Common refinement.
+     HOW: Re-run with additional filter.
+
+G2 — Past bad experience
+     WHY: Important signal. Don't recommend something user already rejected.
+     HOW: Add product to exclusion list for this session. Re-run.
+```
+
+### Nice to Have (Later)
+
+```
+E1-E3 — Skincare education
+     WHY: Valuable but not core to recommendation. 
+     HOW: Pure LLM knowledge. No DB needed.
+
+D2, D4, D5, D6 — Detailed usage instructions
+     WHY: Helpful but generic. Available on product page.
+     HOW: LLM knowledge.
+
+F1-F3 — Purchase/availability
+     WHY: Valuable for conversion but needs external data 
+          (Nykaa links, pricing). You have Nykaa scraper 
+          but real-time price checking is complex.
+
+B2 — Full side by side comparison
+     WHY: Nice but B1 (why this over that) covers 80% of the need.
+
+C1, C3, C5 — Deep ingredient/concentration/side effect details
+     WHY: Power user feature. Product overview already does this.
+```
+
+---
+
+## MVP Summary
+
+| Priority | Query Type | Effort |
+|----------|-----------|--------|
+| Must | A1: Budget filter | Low — re-run with budget param |
+| Must | A2: Change product type | Low — re-run with type param |
+| Must | A6: More results | Low — return next batch from scored list |
+| Must | B1: Why this over that | Low — LLM compares existing sub-scores |
+| Must | C4: Does it help other concern | Low — lookup pre-computed concern_score |
+| Must | G3: New query entirely | Already handled — treat as fresh query |
+
+Six post-recommendation query types for MVP. All are low effort because they either re-use the existing pipeline with a modified parameter, or use data that's already computed from the scoring step.
+
+The intent extractor LLM would need to recognize these as follow-ups and route them correctly. It would need a new field in its output:
+
+```json
+{
+  "action": "new_recommendation" | "refine_budget" | "refine_type" | 
+            "more_results" | "compare_products" | "check_other_concern" |
+            "clarify_response"
+}
+```
+
+
+
+exclusion
+
+Let me think through every possible "NOT" / exclusion scenario.
+
+---
+
+## All Possible Exclusion Queries
+
+### 1. Exclude Specific Ingredient
+
+```
+"niacinamide serum without alpha arbutin"
+"moisturizer without hyaluronic acid"
+"serum for pigmentation without hydroquinone"
+"anything without salicylic acid"
+"no tretinoin please"
+```
+
+**How it works:** Check product_ingredients table, exclude products containing that exact ingredient.
+
+---
+
+### 2. Exclude Ingredient Family
+
+```
+"anti-aging serum without retinol or any retinoids"
+"no vitamin C derivatives"
+"without any AHAs"
+"no BHAs"
+"without any peptides"
+"no essential oils"
+"no acids at all"
+```
+
+**Common families to pre-define:**
+
+| Family | Members |
+|---|---|
+| Retinoid | retinol, retinal, retinaldehyde, retinyl palmitate, retinyl acetate, adapalene, tretinoin, tazarotene, hydroxypinacolone retinoate, bakuchiol (debatable) |
+| Vitamin C | ascorbic acid, sodium ascorbyl phosphate, ascorbyl glucoside, 3-o-ethyl ascorbic acid, ascorbyl tetraisopalmitate, magnesium ascorbyl phosphate |
+| AHA | glycolic acid, lactic acid, mandelic acid, tartaric acid, citric acid, malic acid |
+| BHA | salicylic acid, betaine salicylate |
+| PHA | gluconolactone, lactobionic acid |
+| All acids | AHA + BHA + PHA combined |
+| Niacinamide | niacinamide, nicotinamide |
+| Peptides | all copper peptides, matrixyl, argireline, palmitoyl tripeptide, etc. |
+| Essential oils | tea tree oil, lavender oil, rosemary oil, eucalyptus oil, peppermint oil, etc. |
+| Mineral oils | mineral oil, paraffinum liquidum, petrolatum |
+| Silicones | dimethicone, cyclomethicone, cyclopentasiloxane, dimethiconol, amodimethicone |
+| Parabens | methylparaben, ethylparaben, propylparaben, butylparaben |
+| Sulphates | sodium lauryl sulphate (SLS), sodium laureth sulphate (SLES), ammonium lauryl sulphate |
+| Alcohols (drying) | alcohol denat, ethanol, isopropyl alcohol, SD alcohol (NOT cetyl alcohol, cetearyl alcohol — these are fatty alcohols, not drying) |
+| Formaldehyde releasers | DMDM hydantoin, imidazolidinyl urea, diazolidinyl urea, quaternium-15 |
+| Hydroquinone family | hydroquinone, arbutin, alpha arbutin, beta arbutin |
+
+---
+
+### 3. Exclude Category / Product Property
+
+```
+"fragrance free serum"
+"paraben free moisturizer"
+"sulphate free cleanser"
+"silicone free primer"
+"alcohol free toner"
+"oil free moisturizer"
+"mineral oil free"
+"cruelty free only"
+"vegan only"
+"dermatologist tested"
+"non comedogenic"
+"hypoallergenic"
+"fungal acne safe" / "malassezia safe"
+"no artificial colours" / "dye free"
+"preservative free" (rare but asked)
+"steroid free"
+"soap free"
+```
+
+**Pre-compute as boolean flags per product:**
+
+```
+is_fragrance_free
+is_paraben_free
+is_sulphate_free
+is_silicone_free
+is_alcohol_free (drying alcohols only)
+is_oil_free
+is_mineral_oil_free
+is_cruelty_free
+is_vegan
+is_dye_free
+is_fungal_acne_safe
+is_non_comedogenic
+```
+
+Some of these (cruelty free, vegan, dermatologist tested) depend on brand claims, not ingredient list. You might not have this data. Flag for later.
+
+---
+
+### 4. Exclude Specific Brand
+
+```
+"suggest something but not Minimalist"
+"anything except The Ordinary"
+"no Mamaearth products"
+"not from that brand"
+```
+
+**How it works:** Simple filter on brand name. No pre-computation needed.
+
+---
+
+### 5. Exclude Specific Product
+
+```
+"not this one, I've tried it before"
+"anything other than the ones you just showed"
+"I already have this, show me something else"
+"product 2 broke me out, remove it and show others"
+```
+
+**How it works:** Add product_id to exclusion list for this session. Filter out from results.
+
+---
+
+### 6. Exclude Price Range
+
+```
+"nothing too expensive"
+"no luxury brands"
+"no pharmacy products, I want something premium"
+"not below 200, I don't trust cheap products"
+```
+
+This is both max AND min budget:
+
+```
+"under 500" → max_price = 500
+"not below 200" → min_price = 200
+"between 300-800" → min_price = 300, max_price = 800
+```
+
+---
+
+### 7. Exclude Texture / Format
+
+```
+"no gel texture"
+"not a cream, too heavy"
+"no sheet masks"
+"nothing oily / greasy"
+"no pills or supplements"
+"no foam based"
+```
+
+**This is tricky.** You have product_type but not texture data. A serum can be gel-based or water-based. A moisturizer can be cream or gel-cream.
+
+For MVP: handle product_type exclusion ("not a cream"). Texture exclusion needs product texture data which you might not have.
+
+---
+
+### 8. Exclude Based on Past Experience
+
+```
+"I'm allergic to centella"
+"salicylic acid irritates my skin"
+"niacinamide breaks me out for me"
+"I've had bad reactions to vitamin C"
+```
+
+This is different from just excluding an ingredient. The user is telling you about a PERSONAL sensitivity. This should:
+1. Exclude the ingredient from this query
+2. Ideally be remembered for future queries (user allergen profile)
+
+**Note:** Your onboarding doesn't capture specific allergens. This is a gap. For MVP, treat as session-level exclusion. For later, add to user profile.
+
+---
+
+### 9. Exclude Based on Skin Reaction Concern
+
+```
+"nothing that causes purging"
+"no products that increase sun sensitivity"
+"nothing that will make my skin peel"
+"no products that sting on application"
+```
+
+These map to product properties:
+
+| User says | Maps to |
+|---|---|
+| "no purging" | Exclude retinoids, strong AHAs, BHAs |
+| "no sun sensitivity" | `has_sun_sensitivity = false` (already pre-computed) |
+| "no peeling" | Exclude high concentration acids, retinoids |
+| "no stinging" | Exclude low pH products, vitamin C, high alcohol |
+
+For MVP: "no sun sensitivity" is easy — already a flag. Others need LLM reasoning to map user concern to ingredient exclusions.
+
+---
+
+### 10. Exclude Based on Routine Conflict
+
+```
+"I already use tretinoin at night, suggest something that won't conflict"
+"I use AHA in my routine, don't suggest anything that clashes"
+"I'm on accutane, what's safe to use?"
+```
+
+This is interaction-based exclusion. The user has an existing product/ingredient and wants to avoid conflicts.
+
+**How it works:** The intent extractor captures the existing ingredient. The system checks ingredient interaction data. Excludes products that have harmful interactions with that ingredient.
+
+This is complex. For MVP, the LLM response generator can mention "since you use tretinoin, avoid using this at the same time" rather than filtering at the database level.
+
+---
+
+## Complete Summary
+
+| # | Exclusion Type | Example | MVP? | Effort |
+|---|---|---|---|---|
+| 1 | Specific ingredient | "without alpha arbutin" | Yes | Low — NOT IN query |
+| 2 | Ingredient family | "no retinoids" | Yes | Medium — need family mapping table |
+| 3 | Category (fragrance/paraben free) | "fragrance free" | Yes | Medium — pre-compute 6-8 flags |
+| 4 | Specific brand | "not Minimalist" | Yes | Low — filter on brand |
+| 5 | Specific product | "not this one" | Yes | Low — exclusion list per session |
+| 6 | Price range (min and max) | "between 300-800" | Yes | Low — add min_price param |
+| 7 | Texture/format | "no gel texture" | No | Need texture data, don't have |
+| 8 | Personal allergy/sensitivity | "allergic to centella" | Partial | Exclusion yes, remembering no |
+| 9 | Skin reaction concern | "nothing causing purging" | Partial | Sun sensitivity yes, others need LLM mapping |
+| 10 | Routine conflict | "I use tretinoin" | No | Complex interaction checking |
+
+---
+
+## Updated Intent Extractor Output
+
+```json
+{
+  "concern": "anti_aging",
+  "ingredient": null,
+  "product_type": "serum",
+  "budget_max": 1000,
+  "budget_min": null,
+  "skin_type_override": null,
+  "safety_overrides": {},
+  
+  "include_ingredient": "niacinamide",
+  "exclude_ingredient": ["alpha arbutin"],
+  "exclude_family": ["retinoid"],
+  "exclude_category": ["fragrance"],
+  "exclude_brand": null,
+  "exclude_product_ids": [],
+  
+  "has_enough_to_recommend": true,
+  "ranking_path": "concern"
+}
+```
+
+## Updated Filter Pipeline
+
+```
+EXISTING:
+12. Product type match
+13. Contains ingredient (include)
+14. Budget max (price ≤ max)
+15. Skin type match
+16. Concern efficacy > 0
+
+NEW:
+17. Exclude specific ingredient(s)
+18. Exclude ingredient family
+19. Exclude category (fragrance_free, paraben_free, etc.)
+20. Exclude brand
+21. Exclude specific product IDs
+22. Budget min (price ≥ min)
+```
+
+Should I update the master document with all of this?
+Does this prioritization feel right? Or do you want to add/remove something from the MVP list?
+
+
+Two scenarios where this happens:
+
+---
+
+## Scenario 1 — User Refers to Recommended Product
+
+User got 3 recommendations. Says:
+
+```
+"I've tried product 2 before, it didn't work. Show me others"
+"Remove the Minimalist one, show me alternatives"
+"Not the first one, I already have it"
+```
+
+**How it works:**
+
+The Memory Node has the last conversation including the 3 recommended products with their product_ids. The intent extractor LLM reads the conversation history and maps:
+
+```
+"product 2" → product_id of the 2nd recommended product
+"the Minimalist one" → product_id of the Minimalist product from recommendations
+"the first one" → product_id of the 1st recommended product
+```
+
+LLM outputs:
+
+```json
+{
+  "action": "refine",
+  "exclude_product_ids": [42]
+}
+```
+
+The system then either:
+
+**Option A — Re-filter from already scored list (fast):**
+
+The scoring node already scored all surviving products, not just the top 5. The ranking node picked top 5. Now just re-run ranking with product 42 excluded. Next best product moves up. No re-computation needed.
+
+**Option B — Re-run full query (if scored list not stored):**
+
+Re-run the same query with product_id 42 added to exclusion filter.
+
+**Option A is better.** It means the scoring node output (all scored products, not just top 5) should be stored in the Memory Node or a temporary variable for the session. Then refinement queries just re-rank from the stored list without hitting Supabase again.
+
+---
+
+## Scenario 2 — User Mentions a Product Not From Recommendations
+
+```
+"I already use Minimalist 10% Niacinamide, suggest something different"
+"I've been using Deconstruct serum, want to try something else"
+```
+
+**How it works:**
+
+The intent extractor LLM detects a product name. But it needs to map the product name to a product_id in your database.
+
+Two options:
+
+**Option A — LLM extracts product name, Supabase fuzzy search:**
+
+```
+LLM output: { "exclude_product_name": "Minimalist 10% Niacinamide Serum" }
+
+Supabase query:
+SELECT product_id FROM products 
+WHERE product_name ILIKE '%Minimalist%Niacinamide%'
+LIMIT 1
+```
+
+If found → add to exclude_product_ids. If not found → ignore, proceed without exclusion, mention "I couldn't identify the exact product you mentioned."
+
+**Option B — LLM extracts product name, exact match:**
+
+Less reliable. Product names have variations ("Minimalist 10% Niacinamide Face Serum" vs "Minimalist Niacinamide 10% Serum"). Fuzzy search is better.
+
+---
+
+## The Implementation
+
+**In the n8n workflow:**
+
+```
+After Intent Extractor detects exclude_product:
+    ↓
+IF exclude by number ("product 2"):
+    → Look up product_id from Memory Node (stored recommendations)
+    → Add to exclude_product_ids
+    → Re-rank from stored scored list (no Supabase call)
+    
+IF exclude by name ("the Minimalist one"):
+    → Check Memory Node first (is it one of the recommendations?)
+    → If yes → same as above
+    → If no → Supabase fuzzy search by name → get product_id
+    → Add to exclude_product_ids
+    → Re-run full query with exclusion filter
+```
+
+**The filter itself is simple:**
+
+```sql
+WHERE product_id NOT IN (42, 87, 103)
+```
+
+---
+
+## What Needs To Be Stored Per Session
+
+For exclusions and refinements to work smoothly, the session needs to remember:
+
+```
+session_state:
+  last_query_params: { concern, ingredient, product_type, budget, ... }
+  last_scored_products: [ { product_id, score, all_sub_scores }, ... ] (ALL scored, not just top 5)
+  excluded_product_ids: [42, 87]  (accumulates across the session)
+  last_recommended_ids: [12, 42, 78]  (the top 3-5 shown to user)
+```
+
+This way:
+- "Remove product 2" → adds 42 to excluded list, re-ranks from scored list
+- "Also remove the third one" → adds 78, re-ranks again
+- Exclusions accumulate — once excluded, stays excluded for the session
+
+Does this make sense? Should I add this to the master document?
+
+
+
+
+
+Before I write them — one question:
+For the email threads in Sprints 10-13 the key conversations would be:
+
+Pregnant women cohort analysis results thread
+Simplified onboarding A/B test results thread
+Prenatal presets ICMR research debate thread
+38% funnel drop-off confirmation thread
+Q2 OKR review thread
+Investor update thread (Ravi's response about pregnant women)
+BUG-014 health critical unit display bug thread
+Press outreach data story thread

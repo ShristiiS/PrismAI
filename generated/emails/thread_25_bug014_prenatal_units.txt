@@ -1,0 +1,90 @@
+Date: June 26, 2025 — 3:15 PM
+From: priya@nutrivana.in
+To: arjun@nutrivana.in, shristi@nutrivana.in
+Subject: BUG-014 — prenatal units wrong — fixing now
+
+Arjun, Shristi,
+
+Critical bug found 3 hours after the prenatal presets launch. Fixing it now but you need to know immediately.
+
+Folate is displaying as 600mg on the analysis screen instead of 600mcg. The value (600) is correct. The unit (mg vs mcg) is wrong.
+
+For folate the distinction is critical. 600mg of folate would be a toxic dose. 600mcg is the correct prenatal second trimester target. A pregnant user seeing 600mg could be alarmed, or worse, could trust the wrong unit and have incorrect conversations with their doctor.
+
+Root cause: the formatNutrient shared utility has correct unit mappings for standard RDA nutrients. When prenatal preset nutrients were added they were given new nutrient_ids in the database. The formatNutrient utility was not updated with the unit mappings for these new IDs. The utility was looking up the unit by nutrient_id and finding null — defaulting to mg instead of mcg.
+
+Fix: add prenatal nutrient_id → unit mappings to formatNutrient. This is a 15 minute fix. Deploying now.
+
+Priya
+
+---
+Date: June 26, 2025 — 3:30 PM
+From: arjun@nutrivana.in
+To: priya@nutrivana.in, shristi@nutrivana.in
+Subject: Re: BUG-014 — prenatal units wrong — fixing now
+
+Priya,
+
+Fix this now. Everything else paused.
+
+I want to flag something about why this bug class is harder to catch than it looks. The value (600) is correct. All our tests that check whether the correct nutrient target value is stored and displayed would pass. The error is in the label not the number.
+
+Our test suite checks: does the user see their folate target? Yes. Does the value match the ICMR recommendation? Yes (600). But we never had a test asking: is the unit label correct?
+
+This is the same category as NUTR-BUG-009 in Sprint 8 where the DV% was showing decimal instead of dash. The number looks fine but the presentation is wrong. We need explicit display tests for unit labels not just value correctness.
+
+Arjun
+
+---
+Date: June 26, 2025 — 4:00 PM
+From: shristi@nutrivana.in
+To: arjun@nutrivana.in, priya@nutrivana.in
+Subject: Re: BUG-014 — prenatal units wrong — fixing now
+
+Fix first. Discussion after.
+
+How did this get through user testing? We tested with 2 pregnant users before deployment. Neither caught the unit error.
+
+Arjun — after the fix, can you tell me: did the 2 testers see the analysis screen during testing or only the onboarding flow? I want to understand whether this was a testing coverage gap or whether they saw the bug and did not notice it.
+
+Shristi
+
+---
+Date: June 26, 2025 — 5:00 PM
+From: priya@nutrivana.in
+To: shristi@nutrivana.in, arjun@nutrivana.in
+Subject: Re: BUG-014 — prenatal units wrong — fixing now
+
+Fix deployed. All 8 prenatal micronutrients now display with correct units. Verified on the analysis screen:
+Folate: mcg ✓
+Iron: mg ✓
+Calcium: mg ✓
+Vitamin D: IU ✓
+Iodine: mcg ✓
+B12: mcg ✓
+Zinc: mg ✓
+Omega-3: g ✓
+
+Added regression tests for all 8 prenatal nutrient unit displays. These tests will catch any future unit mapping errors before deployment.
+
+On Shristi's question: I reviewed the testing session notes. The 2 testers went through the onboarding flow and checked the goal confirmation screen. Neither navigated to the analysis screen during the test session. The unit error was on the analysis screen only — onboarding showed units correctly because it uses a different display component.
+
+Testing coverage gap. We tested the onboarding flow but not the analysis display of prenatal targets. The definition of done for any new micronutrient-related feature should include verifying the analysis screen displays correctly — not just the onboarding flow.
+
+Priya
+
+---
+Date: June 26, 2025 — 5:45 PM
+From: shristi@nutrivana.in
+To: priya@nutrivana.in, arjun@nutrivana.in
+Subject: Re: BUG-014 — prenatal units wrong — fixing now
+
+Testing coverage gap confirmed. Adding to definition of done immediately: any feature touching micronutrient display must be verified on both the onboarding flow AND the analysis screen. Different display components, different unit lookup paths.
+
+The bug was fixed in 4 hours. That is the right response time for a health-critical bug. The process worked.
+
+What did not work: we did not test the complete user journey for prenatal users — only the new onboarding screens. For a feature that affects how users read their health data we should have tested every screen they would see.
+
+Adding this to the Sprint 13 retrospective. Not as a blame item but as a process improvement: new feature testing must cover the complete user journey not just the new screens.
+
+Shristi
