@@ -36,6 +36,7 @@ class Strategy(str, Enum):
     group_by_column = "group_by_column"
     single_chunk = "single_chunk"
     paragraph_based = "paragraph_based"
+    slide_based = "slide_based"
 
 
 @dataclass
@@ -331,3 +332,83 @@ def detect_email_strategy() -> DetectionResult:
         confidence="high",
         notes="Email structure is consistent — always paragraph based",
     )
+
+
+def detect_pptx_strategy() -> DetectionResult:
+    """Return the fixed strategy for PowerPoint files.
+
+    PowerPoint decks are always chunked one slide at a time, so this
+    detector performs no I/O and always returns slide_based with high
+    confidence.
+    """
+
+    return DetectionResult(
+        strategy=Strategy.slide_based,
+        confidence="high",
+        notes=(
+            "PowerPoint files are always chunked one slide at a time "
+            "— no detection needed."
+        ),
+    )
+
+
+def detect_text_strategy(file_path: str) -> DetectionResult:
+    """Pick a chunking strategy for a plain-text or Markdown file.
+
+    Signals are checked in order; the first one that fires wins:
+        1. >= 2 lines start with one or more '#' characters (Markdown
+           headings) -> heading_based, high.
+        2. Blank lines make up > 15% of all lines and there are >= 3
+           blank lines -> blank_line_based, medium.
+        3. Otherwise -> recursive_fallback, low.
+
+    Any exception is swallowed and reported as recursive_fallback / low,
+    with the error message captured in ``notes``.
+    """
+
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+
+        total_lines = len(lines)
+        heading_count = sum(
+            1 for line in lines if line.lstrip().startswith("#")
+        )
+        if heading_count >= 2:
+            return DetectionResult(
+                strategy=Strategy.heading_based,
+                confidence="high",
+                notes=(
+                    f"Found {heading_count} Markdown heading lines "
+                    "(starting with '#'); file is structured by headings."
+                ),
+            )
+
+        blank_count = sum(1 for line in lines if not line.strip())
+        if total_lines > 0:
+            blank_ratio = blank_count / total_lines
+            if blank_ratio > 0.15 and blank_count >= 3:
+                return DetectionResult(
+                    strategy=Strategy.blank_line_based,
+                    confidence="medium",
+                    notes=(
+                        f"{blank_count} blank lines out of {total_lines} "
+                        f"({blank_ratio:.0%}); sections are separated by blank lines."
+                    ),
+                )
+
+        return DetectionResult(
+            strategy=Strategy.recursive_fallback,
+            confidence="low",
+            notes=(
+                f"Only {heading_count} heading line(s) and {blank_count} blank "
+                f"line(s) out of {total_lines} total; no clear structural signal."
+            ),
+        )
+
+    except Exception as exc:
+        return DetectionResult(
+            strategy=Strategy.recursive_fallback,
+            confidence="low",
+            notes=f"Failed to inspect text file structure: {exc!r}",
+        )
