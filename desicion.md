@@ -359,3 +359,107 @@ Why 500 character threshold for single chunk — short emails are usually one po
 A table row is meaningless without its column headers. Half a table is meaningless without the other half. Splitting a table mid-row would produce a chunk like "Dev A | 8 |" with no context about what those values mean.
 
 Every table found in any document always becomes its own standalone chunk, with the heading it falls under used as a prefix so the chunk knows what section it belongs to. No exception for any strategy anywhere.
+
+
+
+## Embedder — Decision Reasoning
+
+---
+
+### What is an embedding and why does PrismAI need it?
+
+When a PM asks "what blocked sprint 3?", the system cannot just search for those exact words in the documents. The documents might say "impediments", "blockers", "obstacles" — different words, same meaning.
+
+Embeddings solve this. An embedding converts any piece of text into 1536 numbers that represent its meaning. "What blocked sprint 3?" and "impediments in sprint 3" will produce similar numbers because they mean the same thing. The system finds chunks whose numbers are closest to the question's numbers. That is semantic search — search by meaning, not by exact words.
+
+Without embeddings, PrismAI is just a keyword search tool. With embeddings, it understands meaning.
+
+---
+
+### Why OpenRouter instead of calling OpenAI directly?
+
+The project already has an OpenRouter API key configured in the .env file. OpenRouter is a gateway that provides access to OpenAI models including text-embedding-3-small. Using OpenRouter means one API key gives access to many models — if we want to switch embedding models in V2, we change one line of code, not our credentials setup.
+
+---
+
+### Why text-embedding-3-small and not another model?
+
+Several embedding models were considered:
+
+text-embedding-3-small was chosen because the entire Nutrivana dataset is in English, it has the best quality to cost ratio for English text, it costs approximately $0.02 per million tokens which means the entire dataset costs a few cents to embed, it is fast, and it works with the existing OpenRouter key with no new account needed.
+
+text-embedding-3-large was rejected because it produces 3072 dimensions instead of 1536, costs more, is slower, and the quality difference is not meaningful for a PM document dataset of this size.
+
+Cohere multilingual was rejected because the dataset is English only. It becomes the right choice in V2 if multilingual support is added.
+
+---
+
+### Why 1536 dimensions and not more or fewer?
+
+Dimensions are like coordinates in a meaning space. More dimensions means more precision in capturing meaning differences between texts.
+
+1536 is what text-embedding-3-small produces — it is fixed by the model and cannot be changed. The Supabase column was created as vector(1536) to match exactly. If you switch to text-embedding-3-large in V2, it produces 3072 dimensions and the Supabase column would need to change to vector(3072).
+
+Fewer dimensions like 512 would mean less precision — two chunks with different meanings might get similar vectors and the retriever would return wrong results. More dimensions means more storage cost and slower similarity search for a quality gain that is not meaningful at this dataset size.
+
+---
+
+### Why batch size 100 and not send one text at a time?
+
+The Nutrivana dataset will produce thousands of chunks. Sending each chunk as a separate API call would mean thousands of HTTP requests — slow, expensive, and likely to hit rate limits.
+
+Batching sends 100 chunks in one API call. OpenRouter processes all 100 together and returns 100 vectors at once. For 500 chunks this means 5 API calls instead of 500.
+
+100 was chosen as a safe conservative batch size. OpenRouter supports up to 2048 inputs per call but 100 avoids any risk of hitting undocumented limits and keeps each request small enough to complete reliably within the 60 second timeout.
+
+---
+
+### Why sort the API response by index before extracting vectors?
+
+The OpenRouter API does not guarantee that the response items come back in the same order as the input texts. If you sent texts [A, B, C] you might get back vectors in order [B, A, C].
+
+Each response item has an index field that tells you which input text it corresponds to. Sorting by index before extracting vectors ensures the output list always matches the input list order exactly. Without this sort, embeddings would be randomly mismatched to their chunks — chunk 1 might get chunk 3's embedding, producing completely wrong search results with no error message.
+
+---
+
+### Why replace empty strings with "empty document"?
+
+The OpenRouter API rejects empty strings and returns an error for the entire batch. A single empty chunk would crash the whole ingestion run.
+
+Empty chunks can appear when a section has a heading but no body text, or when a table is the only content under a heading and the text accumulator is empty. Replacing with "empty document" allows the batch to complete. The resulting embedding for "empty document" is meaningless but harmless — these chunks will never rank highly in similarity search because no PM query will ever be semantically similar to "empty document".
+
+---
+
+### Why retry 3 times with a 2 second wait?
+
+Network calls fail occasionally — temporary connection issues, brief API unavailability, rate limit spikes. A single failure should not crash an entire ingestion run that might have been processing for 10 minutes.
+
+3 retries covers the vast majority of transient failures. 2 seconds between retries gives the API time to recover from a momentary overload. If all 3 retries fail, the error is raised immediately with a clear message identifying which batch failed so it can be debugged and re-run.
+
+---
+
+### Why 0.1 second delay between batches?
+
+A small pause between batches prevents hammering the API with back-to-back requests. Without any delay, sending 10 batches in rapid succession might trigger rate limiting. 0.1 seconds is small enough to not meaningfully slow down ingestion but large enough to be respectful of the API's rate limits.
+
+---
+
+### Why raise a ValueError at import time if credentials are missing?
+
+If the API key or base URL is not set in .env, every embedding call will fail. It is much better to find this out immediately when the module is imported — before any files are parsed, before any chunks are generated — than to discover it after 10 minutes of processing when the first embedding call fails.
+
+A clear ValueError at import time tells the developer exactly what is missing and where to set it. Silent failures discovered mid-ingestion waste time and leave partially ingested data in Supabase.
+
+---
+
+### Why is get_single_embedding a separate function from get_embeddings?
+
+At query time, when a PM types a question, that single question needs to be embedded before searching Supabase. Calling get_embeddings with a list of one text works but is semantically confusing — the retrieval layer should not need to know about batching or lists.
+
+get_single_embedding provides a clean simple interface: give it one string, get back one vector. Internally it calls get_embeddings so all retry logic, error handling, and logging lives in one place. No code duplication.
+
+---
+
+### Why use httpx instead of the requests library?
+
+httpx is a modern HTTP library that supports both synchronous and asynchronous calls. The ingestion pipeline currently uses synchronous calls but the FastAPI backend uses async. Using httpx from the start means the embedder can be made fully async in V2 without changing the API call logic — just add async/await. With requests, switching to async would require rewriting the HTTP calls entirely.
