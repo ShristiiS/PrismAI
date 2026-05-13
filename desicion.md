@@ -463,3 +463,187 @@ get_single_embedding provides a clean simple interface: give it one string, get 
 ### Why use httpx instead of the requests library?
 
 httpx is a modern HTTP library that supports both synchronous and asynchronous calls. The ingestion pipeline currently uses synchronous calls but the FastAPI backend uses async. Using httpx from the start means the embedder can be made fully async in V2 without changing the API call logic — just add async/await. With requests, switching to async would require rewriting the HTTP calls entirely.
+
+
+
+```markdown
+## Storage — Decision Reasoning
+
+---
+
+## You have 3 tables. Each function does ONE specific job on those tables.
+
+Think of it like this. You have 3 filing cabinets:
+- `documents` cabinet
+- `document_chunks` cabinet
+- `row_hashes` cabinet
+
+The storage.py functions are like specific actions you can do on those cabinets. Some open a drawer and read. Some add a new file. Some update an existing file. Some delete.
+
+---
+
+## Let me map every function to its table and action:
+
+### documents table actions
+
+| Function | Action | When used |
+|---|---|---|
+| `get_document_by_source_id` | READ — find one row by Drive file ID | Check if file was ingested before |
+| `document_exists_by_content_hash` | READ — check if hash exists | Catch duplicate files uploaded twice |
+| `insert_document` | WRITE — add new row | First time a file is ingested |
+| `update_document_after_reingestion` | UPDATE — change hash and timestamp | File content changed, re-ingested |
+| `update_document_metadata_only` | UPDATE — change only metadata column | Gmail labels changed, no re-embedding needed |
+| `delete_document_and_chunks` | DELETE — remove document row | File deleted from Drive or Gmail |
+
+### document_chunks table actions
+
+| Function | Action | When used |
+|---|---|---|
+| `delete_chunks_for_document` | DELETE — remove all chunks for a document | Before re-ingesting a changed file |
+| `insert_chunks_with_embeddings` | WRITE — add all chunks with their vectors | Every time a file is ingested |
+| `delete_chunks_for_rows` | DELETE — remove only specific row chunks | Excel row-level update — only changed rows |
+
+### row_hashes table actions
+
+| Function | Action | When used |
+|---|---|---|
+| `get_row_hashes_for_document` | READ — get all stored row hashes | Compare against current Excel rows to find changes |
+| `upsert_row_hashes` | WRITE or UPDATE — save row hashes | After Excel ingestion to record what each row looked like |
+
+### Logging — no table
+
+| Function | Action | When used |
+|---|---|---|
+| `log_ingestion_result` | Print summary to terminal | After a batch ingestion run finishes |
+
+---
+
+## Why so many functions instead of just a few?
+
+Because each situation needs a different action.
+
+**Situation 1 — Brand new file:**
+- `insert_document` → create document row
+- `insert_chunks_with_embeddings` → store all chunks
+
+**Situation 2 — File changed in Drive:**
+- `get_document_by_source_id` → find existing document
+- `delete_chunks_for_document` → remove old chunks
+- `insert_chunks_with_embeddings` → store new chunks
+- `update_document_after_reingestion` → update hash
+
+**Situation 3 — Same file uploaded with different name:**
+- `document_exists_by_content_hash` → detect duplicate → skip
+
+**Situation 4 — Gmail label changed:**
+- `update_document_metadata_only` → update labels → done. No re-embedding.
+
+**Situation 5 — Excel file changed, only 3 rows different:**
+- `get_row_hashes_for_document` → find which rows changed
+- `delete_chunks_for_rows` → delete only changed row chunks
+- `insert_chunks_with_embeddings` → re-embed only changed rows
+- `upsert_row_hashes` → update stored hashes
+
+**Situation 6 — File deleted from Drive:**
+- `delete_document_and_chunks` → remove everything
+
+---
+
+Each function is small and does exactly one thing. The pipeline.py module combines them in the right order for each situation.
+```
+
+
+
+INGESTION TESTING OUTCOME:
+
+## Word Document Ingestion Testing — Observations and Decisions
+
+---
+
+### Test file used
+sprint1_meeting_notes.docx — Sprint 1 meeting notes for Nutrivana
+
+---
+
+### What the debug test revealed at each step
+
+**Step 1 — Signal Detection**
+The signal detector correctly identified the document as heading_based with high
+confidence. It found 8 paragraphs with real Word Heading styles. This is exactly
+right — sprint meeting notes are structured documents with clear section headings.
+
+**Step 2 — Parsing**
+The parser correctly labelled every element:
+- Document title and metadata lines → paragraph
+- Sprint Health Check, Key Discussions, Decisions Made etc → heading
+- Action items data → table
+- Body text under each heading → paragraph
+
+**Step 3 — Chunking**
+10 chunks produced. Each heading section became one chunk. The Action Items
+table became its own separate chunk prefixed with "Action Items [TABLE]".
+
+---
+
+### Issue 1 — Empty heading chunk (Chunk 7)
+**Observation:** Chunk 7 contained only "Action Items" — 12 characters — with no
+body text. The Action Items section had no paragraph text, only a table.
+
+**Decision:** Keep this behaviour. The empty chunk causes zero problems because:
+- It will never rank highly in similarity search — no meaningful content
+- The table chunk (Chunk 8) already has "Action Items" prefixed to it and is
+  fully self-contained
+- One extra tiny chunk per document is negligible at this dataset size
+- Fixing it adds code complexity for no real quality gain
+
+---
+
+### Issue 2 — Document title classified as paragraph not heading
+**Observation:** "Nutrivana Weekly Sync — Sprint 1" was classified as a paragraph
+instead of a heading. This is because the document uses Word's "Title" style,
+not "Heading 1" style. Our parser only detects styles starting with "Heading".
+
+**Decision:** No fix needed for V1. Here is why:
+- Chunk 0 already contains the full title text AND "Sprint 1" mentioned twice
+- When a PM asks "summarise sprint 1 meeting notes?" the retriever finds chunks
+  by semantic similarity — not by whether the title is a heading or paragraph
+- All section chunks already contain Sprint 1 context in their content
+- The title being a paragraph does not affect the chunk content or its embedding
+- Nobody queries for the document title itself — they query for the content inside
+
+If this causes retrieval problems in practice after full ingestion, the fix is to
+add "Title" style detection in parse_docx() — emit it as heading level 0.
+This is noted for V2.
+
+---
+
+### Issue 3 — Table correctly kept as its own chunk
+**Observation:** The Action Items table became Chunk 8 — completely separate from
+the surrounding text, prefixed with the section heading.
+
+**Decision:** This is correct behaviour and exactly what we designed. A table row
+is meaningless without its column headers. The table chunk contains:
+- Section heading as prefix — "Action Items [TABLE]"
+- All rows with Action, Owner, Due Date columns intact
+- Full context for any PM query about action items
+
+---
+
+### How the retriever handles "summarise sprint 1 meeting notes?"
+The retriever embeds the question and finds the top 10 most similar chunks.
+It does NOT retrieve the whole document. It retrieves the most relevant sections.
+Every section chunk already contains Sprint 1 context so all relevant chunks
+rank highly. The summary built from those chunks covers the full meeting.
+
+---
+
+### Key learning from this test
+The pipeline works correctly end to end for Word documents:
+- Signal detection → correct strategy chosen
+- Parsing → all element types correctly identified
+- Chunking → sections split at right boundaries, tables kept intact
+- Embedding → all chunks embedded successfully
+- Storage → document and chunks stored in Supabase correctly
+
+The two observations above are minor and do not affect retrieval quality.
+Both are noted for potential V2 improvements.

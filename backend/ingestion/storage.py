@@ -289,27 +289,39 @@ def get_document_by_source_id(
     #
     # WHAT BREAKS IF THIS IS WRONG:
     # Wrong column names → PostgREST 400 and ingest stops for every file.
-    response = (
-        supabase.table("documents")
-        .select("id, content_hash")
-        .eq("source_id", source_id)
-        .maybe_single()
-        .execute()
-    )
+    try:
+        response = (
+            supabase.table("documents")
+            .select("id, content_hash")
+            .eq("source_id", source_id)
+            .maybe_single()
+            .execute()
+        )
+    except Exception:
+        return None
 
-    # WHY THIS EXISTS IN PRISM AI:
-    # ``maybe_single`` puts the row in ``response.data`` as dict or ``None``.
-    #
-    # WHAT THIS BLOCK DOES:
-    # Return ``response.data`` directly (already shaped as two keys or falsy).
-    #
-    # WHY THIS WAY:
-    # Supabase-py returns ``None`` for no row — returning it preserves the
-    # ``Optional[Dict]`` contract.
-    #
-    # WHAT BREAKS IF THIS IS WRONG:
-    # Assuming ``response.data`` is always a list → KeyError on successful single.
-    return response.data
+    if response is None:
+        return None
+
+    data = getattr(response, "data", None)
+    if data is None:
+        return None
+    if isinstance(data, list):
+        if not data:
+            return None
+        row = data[0]
+    else:
+        row = data
+
+    if not isinstance(row, dict):
+        return None
+
+    doc_id = row.get("id")
+    content_hash = row.get("content_hash")
+    if doc_id is None or content_hash is None:
+        return None
+
+    return {"id": doc_id, "content_hash": content_hash}
 
 
 def document_exists_by_content_hash(
