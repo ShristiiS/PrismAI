@@ -23,6 +23,7 @@ Pipeline contract:
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -1655,142 +1656,117 @@ def chunk_excel_sheet(
     detection: DetectionResult,
     base_metadata: Dict[str, Any],
 ) -> List[Chunk]:
-    """Turn one parsed Excel sheet into Chunks using the chosen tabular strategy.
+    """Turn one parsed Excel sheet into Chunks from raw rows and LLM detection.
 
-    One-sentence summary: dispatches to single_chunk, group_by_column, or
-    row_based packaging based on the detection strategy chosen by
-    :func:`signal_detector.detect_excel_strategy`.
+    One-sentence summary: reads ``{"rows": [[cell, ...], ...]}`` from
+    ``parse_excel``, treats row 0 as headers, and dispatches to
+    ``single_chunk``, ``group_by_column`` (via ``row_groups`` in
+    ``detection.notes``), or ``row_based`` packaging.
 
     Why it exists for PrismAI:
-        PMs live in spreadsheets — sprint backlogs, Jira exports, OKR rollups,
-        dependency matrices, capacity plans. The right chunking depends on the
-        sheet's shape:
-            * A small status board (≤ 5 rows): one chunk so the PM gets the
-              full board back when they ask "what's on the status board?"
-            * An epic-keyed backlog (many tickets per epic): one chunk per
-              epic so "what's in epic Login Refresh?" returns all tickets
-              for that epic together.
-            * A long flat list (capacity per person): one chunk per row so
-              "what is Alex's capacity?" gets that exact row.
+        PMs live in spreadsheets — sprint backlogs, OKR rollups, retros,
+        capacity plans. Chunk shape must match how they ask questions:
+        one narrative block, one chunk per epic/objective group, or one
+        chunk per independent ticket row.
 
-    Decisions made inside (each branch and every formatting choice):
-        1. Empty rows → return ``[]`` immediately. An empty sheet contributes
-           nothing to retrieval; emitting a single empty chunk would pollute
-           the DB with citations to nothing.
-        2. ``Strategy.single_chunk`` — emit ALL rows as one chunk prefixed
-           with ``[<sheet_name>]``. The square-bracketed sheet name is a
-           strong embedding signal for "this is the X sheet" queries.
-        3. ``Strategy.group_by_column`` — bucket rows by the detected
-           grouping column, preserve first-seen order so the chunk sequence
-           matches the original sheet, then format each bucket as one chunk
-           with header ``[<sheet>] <col>: <value>``. Tickets for the same
-           epic stay together so a single retrieval surfaces the whole
-           epic. The grouping column is REMOVED from each row's ``"Col: val"``
-           formatting because it would just repeat ``epic: Login Refresh``
-           on every line; the header row already carries it.
-        4. Default row-based — one chunk per non-empty row, prefixed with
-           ``[<sheet_name>]`` and formatted as ``"Col: val | Col: val"``.
-        5. ``" | "`` between fields — pipes almost never appear in Excel
-           values so they parse cleanly downstream and survive embedding.
-        6. ``f"{h}: {v}"`` — column-name + value preserved together so the
-           embedding sees both context and data; "Status: Blocked" is a far
-           stronger retrieval cue than just "Blocked".
-        7. ``if row.get(h)`` filter — drop empty cells from the formatted
-           line so chunks don't contain ``"Owner: "`` for unfilled columns.
-        8. Row-based skips rows that are fully empty after stringification
-           — same reasoning as parsers' empty-row filter, applied here as
-           well so a chunker called directly by a test still behaves.
-        9. Per-strategy ``strategy_used`` metadata makes downstream debug
-           queries trivial ("how many chunks were group_by_column today?").
-        10. ``sheet_name`` always lands in metadata so retrieval can filter
-            "only show me Sprint 24 backlog rows".
+    Why the format changed:
+        ``parse_excel`` now returns raw cell lists (including row 0) so the
+        LLM classifier can see the full grid before assuming which row is a
+        header. This function applies that classification: row 0 becomes
+        column labels; data rows are formatted per strategy.
+
+    How ``row_groups`` works:
+        When ``detection.strategy`` is ``group_by_column``, ``detection.notes``
+        holds JSON like ``{"1": "Ship MVP", "2": "Ship MVP", "4": "User research"}``.
+        Keys are **string indices into the original raw ``rows`` list** (0 =
+        header, 1+ = data). Rows sharing a parent group value are merged into
+        one chunk so "what are the KRs for Ship MVP?" returns every related row.
+
+    What each strategy produces:
+        * **single_chunk** — all data rows in one block, values joined with
+          ``" | "``, prefixed with ``[<sheet_name>]``.
+        * **group_by_column** — one chunk per distinct parent group value;
+          each row line uses ``header: value`` pairs; content header is the
+          group value (not repeated on every line).
+        * **row_based** — one chunk per non-empty data row with
+          ``header: value`` lines and ``row_index`` in metadata.
 
     Returns:
-        ``List[Chunk]``. pipeline.py iterates the workbook and calls this
-        per sheet, then merges all returned chunks for the file.
+        ``List[Chunk]`` for pipeline.py to embed per sheet.
 
     What breaks if this is wrong:
-        * Wrong strategy dispatch → epic-keyed backlogs flatten to one row
-          per chunk and "what's in Login Refresh?" returns one ticket
-          instead of the whole epic.
-        * Missing sheet_name in metadata → retrieval cannot filter by
-          sheet; the PM gets backlog rows mixed with capacity rows.
-        * Group column not removed from per-row formatting → every line
-          repeats the epic name, embeddings tilt heavily on that token,
-          recall drops.
+        * Mis-mapping ``row_groups`` indices → OKR sub-rows land in the wrong
+          objective chunk; a PM asking about "Ship MVP" gets User research KRs.
+        * Ignoring row 0 as header → column labels embed as data and answers
+          cite nonsense fields.
+        * Failed ``row_groups`` parse without fallback → ingest crashes instead
+          of degrading to per-row chunks.
     """
 
     # WHY THIS EXISTS IN PRISM AI:
-    # parsers.parse_excel returns ``{"headers": [...], "rows": [...]}``.
-    # We pull both with safe defaults so missing keys don't crash; an
-    # empty sheet still returns a usable structure further down.
+    # parse_excel now returns only raw row lists; row 0 is the header row and
+    # the rest are data rows we chunk under the LLM-chosen strategy.
     #
     # WHAT THIS BLOCK DOES:
-    # Extract headers and rows from the sheet payload.
+    # Load raw rows, derive string headers from row 0, and split data rows.
     #
     # WHY THIS WAY:
-    # ``or []`` after ``.get(...)`` defends against ``None`` values — a
-    # sheet with a single None entry would crash a list iteration.
+    # None cells become "" headers so zip/format logic never crashes on missing
+    # labels; data rows stay as original cell lists for index-aligned row_groups.
     #
     # WHAT BREAKS IF THIS IS WRONG:
-    # Calling ``.get(...)`` without the ``or []`` fallback and getting
-    # None back would cause iteration to crash, taking down the entire
-    # ingestion of any workbook with one quirky sheet.
-    headers: List[str] = sheet_data.get("headers", []) or []
-    rows: List[Dict[str, Any]] = sheet_data.get("rows", []) or []
+    # Treating row 0 as data → "Objective" embeds as a ticket; PM answers mix
+    # headers with backlog rows.
+    raw_rows: List[List[Any]] = sheet_data.get("rows", []) or []
+    if not raw_rows:
+        return []
+
+    headers: List[str] = [
+        "" if cell is None else str(cell) for cell in raw_rows[0]
+    ]
+    data_rows: List[List[Any]] = raw_rows[1:]
 
     # WHY THIS EXISTS IN PRISM AI:
-    # An empty sheet should contribute zero chunks. Emitting a single
-    # empty chunk would clutter the DB and produce empty citations.
+    # A header-only sheet has nothing to embed; returning [] avoids empty citations.
     #
     # WHAT THIS BLOCK DOES:
-    # Short-circuit return on no data rows.
+    # Short-circuit when there are no data rows below the header.
     #
     # WHY THIS WAY:
-    # Empty list signals "nothing to embed" to pipeline.py.
+    # Matches parser behaviour on empty sheets and keeps pipeline counts honest.
     #
     # WHAT BREAKS IF THIS IS WRONG:
-    # Falling through would emit a chunk containing only ``[<sheet>]``
-    # which embeds as the sheet name alone — false positives whenever
-    # someone queries the sheet's name.
-    if not rows:
+    # Emitting a chunk with only the sheet name → false positives on sheet-title queries.
+    if not data_rows:
         return []
 
     out: List[Chunk] = []
 
     # WHY THIS EXISTS IN PRISM AI:
-    # Tiny sheets (status boards, summary dashboards) make sense as a
-    # single chunk so a PM asking "what's on the dashboard?" gets the
-    # whole thing back as one coherent answer.
+    # Retrospectives and narrative OKR summaries read best as one retrieval unit.
     #
     # WHAT THIS BLOCK DOES:
-    # Format every row as "Col: val | Col: val", join with newlines,
-    # prefix with the sheet name, emit one Chunk.
+    # Join every data row's non-empty cell values with " | ", prefix sheet name,
+    # emit a single Chunk.
     #
     # WHY THIS WAY:
-    # 1. ``[<sheet_name>]`` prefix gives the embedding a strong
-    #    document-identity signal — ranking improves for sheet-named
-    #    queries.
-    # 2. ``" | "`` between fields is a low-collision separator (pipes
-    #    rarely appear in PM cell values).
-    # 3. ``if row.get(h)`` skips empty cells so the chunk is not full
-    #    of "Owner: | Status:" placeholders.
-    # 4. ``chunk_index=0`` because this strategy always emits exactly
-    #    one chunk per sheet.
+    # Values-only lines keep narrative rows compact; sheet prefix anchors retrieval.
     #
     # WHAT BREAKS IF THIS IS WRONG:
-    # Skipping the prefix → embedding can't disambiguate which sheet
-    # a row came from. Failing to filter empty cells → embedding is
-    # dominated by repeated empty placeholders.
+    # Splitting narrative sheets row-by-row → PM gets half a retro when asking
+    # "what did we learn this sprint?"
     if detection.strategy == Strategy.single_chunk:
-        row_lines = [
-            " | ".join(
-                f"{h}: {row.get(h, '')}" for h in headers if row.get(h)
-            )
-            for row in rows
-        ]
-        body = "\n".join(line for line in row_lines if line)
-        content = f"[{sheet_name}]\n" + body
+        row_lines: List[str] = []
+        for row in data_rows:
+            parts = [
+                str(cell)
+                for cell in row
+                if cell is not None and str(cell).strip() != ""
+            ]
+            if parts:
+                row_lines.append(" | ".join(parts))
+        body = "\n".join(row_lines)
+        content = f"[{sheet_name}]\n" + body if body else f"[{sheet_name}]"
         out.append(
             Chunk(
                 content=content,
@@ -1805,105 +1781,119 @@ def chunk_excel_sheet(
         return out
 
     # WHY THIS EXISTS IN PRISM AI:
-    # The most common PM question against a backlog is "what's in epic X?"
-    # or "show me all sprint 4 tickets". Grouping rows by a low-cardinality
-    # column (epic, sprint, status, owner) means the answer is one chunk,
-    # not five.
+    # Epic- and objective-keyed sheets need LLM-assigned parent groups, not a
+    # single column heuristic, because blank cells continue the group above.
     #
     # WHAT THIS BLOCK DOES:
-    # Bucket rows by their value in detection.group_by_column,
-    # preserving first-seen order, then emit one Chunk per bucket
-    # with a header line and per-row "Col: val" lines (excluding the
-    # group column from per-row formatting).
+    # Parse row_groups JSON from detection.notes; on failure, defer to row_based.
     #
     # WHY THIS WAY:
-    # 1. ``order`` preserves insertion order — Python 3.7+ dicts also
-    #    preserve insertion order so this could rely on that, but the
-    #    explicit list is clearer about intent.
-    # 2. ``group_col`` defaults to "" if detection didn't set it, so we
-    #    fail soft (one giant bucket keyed on "") instead of crashing.
-    # 3. The group value goes into metadata as ``group_value`` so
-    #    retrieval can filter "only show Login Refresh epic chunks".
-    # 4. We exclude ``group_col`` from each row's formatted line because
-    #    it's already in the header — repeating it would inflate every
-    #    row line and bias the embedding toward that one column.
+    # notes is the contract from classify_excel_sheet_with_llm; empty or invalid
+    # JSON must not crash ingest — row_based is the safe default.
     #
     # WHAT BREAKS IF THIS IS WRONG:
-    # Not preserving order → chunks for the same epic appear in random
-    # positions; UI ordering by chunk_index no longer matches sheet
-    # order. Including the group_col in row lines → every row repeats
-    # ``epic: Login Refresh``, embeddings over-rank that token.
-    if detection.strategy == Strategy.group_by_column:
-        group_col = detection.group_by_column or ""
-        groups: Dict[str, List[Dict[str, Any]]] = {}
+    # Swallowing errors silently without fallback → no chunks for a whole sheet.
+    use_group_by_column = detection.strategy == Strategy.group_by_column
+    row_groups: Optional[Dict[str, Any]] = None
+    if use_group_by_column:
+        try:
+            parsed_notes = json.loads(detection.notes) if detection.notes else {}
+            if not isinstance(parsed_notes, dict) or not parsed_notes:
+                raise ValueError("row_groups empty or not a dict")
+            row_groups = parsed_notes
+        except (json.JSONDecodeError, TypeError, ValueError):
+            use_group_by_column = False
+
+    if use_group_by_column and row_groups is not None:
+        # WHY THIS EXISTS IN PRISM AI:
+        # PM questions target a parent objective/epic — all child rows must land
+        # in the same chunk keyed by that parent value.
+        #
+        # WHAT THIS BLOCK DOES:
+        # Bucket data rows by row_groups[raw_index], preserve first-seen group order,
+        # format lines as "header: value", emit one Chunk per group.
+        #
+        # WHY THIS WAY:
+        # Raw indices (1-based in sheet) match the LLM prompt; group_value in the
+        # content header avoids repeating the parent on every line.
+        #
+        # WHAT BREAKS IF THIS IS WRONG:
+        # Off-by-one indices → rows attach to the wrong objective; PM sees mixed KRs.
+        groups: Dict[str, List[List[Any]]] = {}
         order: List[str] = []
-        for row in rows:
-            gv_raw = row.get(group_col, "") if group_col else ""
-            gv = "" if gv_raw is None else str(gv_raw)
+        for data_idx, row in enumerate(data_rows):
+            raw_index = data_idx + 1
+            group_value = row_groups.get(str(raw_index))
+            if group_value is None:
+                continue
+            gv = str(group_value)
             if gv not in groups:
                 groups[gv] = []
                 order.append(gv)
             groups[gv].append(row)
 
-        idx = 0
-        for gv in order:
-            rows_in_group = groups[gv]
-            row_lines = [
-                " | ".join(
-                    f"{h}: {row.get(h, '')}"
-                    for h in headers
-                    if row.get(h) and h != group_col
+        if not order:
+            use_group_by_column = False
+        else:
+            idx = 0
+            for gv in order:
+                row_lines = []
+                for row in groups[gv]:
+                    parts = []
+                    for col_idx, header in enumerate(headers):
+                        val = row[col_idx] if col_idx < len(row) else None
+                        if val is None or str(val).strip() == "":
+                            continue
+                        label = header if header else f"Column{col_idx}"
+                        parts.append(f"{label}: {val}")
+                    if parts:
+                        row_lines.append(" | ".join(parts))
+                body = "\n".join(row_lines)
+                content = f"[{sheet_name}] {gv}\n" + body
+                out.append(
+                    Chunk(
+                        content=content,
+                        chunk_index=idx,
+                        metadata={
+                            **base_metadata,
+                            "sheet_name": sheet_name,
+                            "group_value": gv,
+                            "strategy_used": "group_by_column",
+                        },
+                    )
                 )
-                for row in rows_in_group
-            ]
-            body = "\n".join(line for line in row_lines if line)
-            content = f"[{sheet_name}] {group_col}: {gv}\n" + body
-            out.append(
-                Chunk(
-                    content=content,
-                    chunk_index=idx,
-                    metadata={
-                        **base_metadata,
-                        "sheet_name": sheet_name,
-                        "group_by": group_col,
-                        "group_value": gv,
-                        "strategy_used": "group_by_column",
-                    },
-                )
-            )
-            idx += 1
-        return out
+                idx += 1
+            return out
 
     # WHY THIS EXISTS IN PRISM AI:
-    # Default row-based — one chunk per row. Used when the sheet is a
-    # flat list (capacity per person, dependencies per ticket) and we
-    # want each entry retrievable on its own.
+    # Flat ticket lists and LLM fallback paths need one retrievable row per chunk.
     #
     # WHAT THIS BLOCK DOES:
-    # Walk every row, skip fully empty ones, format as
-    # "Col: val | Col: val", prefix with sheet name, emit a Chunk
-    # carrying the row's index for citation.
+    # Emit one Chunk per non-empty data row with header:value formatting.
     #
     # WHY THIS WAY:
-    # 1. ``row_index=row_index`` (the original Excel row index) goes
-    #    into metadata so the UI can deep-link "row 14 of capacity sheet".
-    # 2. The empty-row guard re-checks even though parsers also drops
-    #    empty rows — defence-in-depth in case this function is ever
-    #    called with hand-built test data.
-    # 3. ``f"{h}: {v}"`` keeps column context with the value, same as
-    #    other branches.
+    # row_index uses the raw sheet index (same numbering as row_groups) for citations.
     #
     # WHAT BREAKS IF THIS IS WRONG:
-    # Including empty rows → empty chunks. Losing row_index → citations
-    # cannot point at a specific row, just "somewhere in the sheet".
+    # Skipping empty rows incorrectly → blank chunks; wrong row_index → bad citations.
     idx = 0
-    for row_index, row in enumerate(rows):
+    for data_idx, row in enumerate(data_rows):
         if not any(
-            (v is not None) and str(v).strip() != "" for v in row.values()
+            cell is not None and str(cell).strip() != "" for cell in row
         ):
             continue
-        formatted = " | ".join(f"{h}: {v}" for h, v in row.items() if v)
+        parts = []
+        for col_idx, header in enumerate(headers):
+            val = row[col_idx] if col_idx < len(row) else None
+            if val is None or str(val).strip() == "":
+                continue
+            label = header if header else f"Column{col_idx}"
+            parts.append(f"{label}: {val}")
+        if not parts:
+            continue
+        formatted = " | ".join(parts)
         content = f"[{sheet_name}]\n" + formatted
+        raw_index = data_idx + 1
         out.append(
             Chunk(
                 content=content,
@@ -1911,7 +1901,7 @@ def chunk_excel_sheet(
                 metadata={
                     **base_metadata,
                     "sheet_name": sheet_name,
-                    "row_index": row_index,
+                    "row_index": raw_index,
                     "strategy_used": "row_based",
                 },
             )

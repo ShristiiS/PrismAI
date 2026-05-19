@@ -446,10 +446,10 @@ def parse_docx(file_path: str) -> List[ParsedElement]:
 
 
 def parse_excel(file_path: str) -> Dict[str, Dict[str, Any]]:
-    """Load every sheet of an Excel workbook into headers plus row dictionaries.
+    """Load every sheet of an Excel workbook into raw row lists.
 
-    One-sentence summary: streams each sheet, treats the first non-empty row as column
-    headers, and returns one dict per sheet keyed by tab name for Excel-specific chunking.
+    One-sentence summary: streams each sheet and returns every non-empty row as a
+    list of cell values per tab for Excel-specific chunking and classification.
 
     Why it exists: PMs track backlogs, OKR rollups, dependency matrices, and retro action
     items in .xlsx files (often exported from Jira or planning tools). Those grids are
@@ -466,18 +466,13 @@ def parse_excel(file_path: str) -> Dict[str, Dict[str, Any]]:
            leaking them locks files on Windows and exhausts handles in long-running workers.
         4. Skip rows where every cell is None — Excel's "used range" often includes hundreds
            of blank rows at the bottom; keeping them would emit empty chunks.
-        5. First non-empty row = headers — matches common PM sheets; we deliberately do not
-           auto-detect title rows above headers (that needs product-specific rules).
-        6. Synthetic ``Column{i}`` for blank header cells — guarantees every column has a
-           stable key for ``row_dict`` and chunker ``f"{h}: {v}"`` lines.
-        7. All cell values as strings — embeddings are text; mixing float/date types would
-           complicate chunkers without improving recall on ticket exports.
-        8. Skip data rows that are all whitespace after strip — removes visual spacer rows
-           between epic blocks.
-        9. Preserve sheet order via ``workbook.sheetnames`` — tab order often means
+        5. Preserve each row's cell values as read from openpyxl, including ``None``
+           for empty cells, so downstream classifiers see the sheet without parser
+           assumptions about headers or types.
+        6. Preserve sheet order via ``workbook.sheetnames`` — tab order often means
            "Summary" before "Details"; sorting alphabetically would scramble narrative flow.
 
-    Returns ``{ sheet_name: {"headers": [...], "rows": [{col: str, ...}, ...]} }``.
+    Returns ``{ sheet_name: {"rows": [[cell, ...], ...]} }``.
     Downstream: pipeline calls ``chunk_excel_sheet`` per sheet with ``DetectionResult``;
     wrong shape here breaks grouping by epic or single-sheet OKR exports — PMs would see
     missing rows or mislabeled columns in answers.
@@ -533,72 +528,21 @@ def parse_excel(file_path: str) -> Dict[str, Dict[str, Any]]:
                     continue
                 raw_rows.append(tuple(row))
 
-            # Sheet was completely empty (or only had whitespace rows). Emit
+            # Sheet was completely empty (or only had all-None rows). Emit
             # an empty record rather than skipping, so callers can tell the
             # difference between "sheet missing" and "sheet known empty".
             if not raw_rows:
-                result[sheet_name] = {"headers": [], "rows": []}
+                result[sheet_name] = {"rows": []}
                 continue
 
-            # First non-empty row is treated as the header row. We don't try
-            # to detect "title" rows that PMs sometimes put above headers —
-            # detecting that reliably needs domain knowledge that doesn't
-            # belong in a generic parser. Document this expectation upstream.
-            header_row = raw_rows[0]
-            headers: List[str] = []
-            for idx, cell in enumerate(header_row):
-                # Synthesise a placeholder header when the cell is empty so
-                # downstream code can always reference columns by *some*
-                # name. Using the column index ("Column0", "Column1", ...)
-                # keeps the placeholder unique within the sheet.
-                if cell is None or str(cell).strip() == "":
-                    headers.append(f"Column{idx}")
-                else:
-                    # Stringify even numeric headers — chunkers expect string
-                    # keys when emitting "header: value" lines.
-                    headers.append(str(cell))
-
-            data_rows: List[Dict[str, str]] = []
-            # Skip raw_rows[0] because that was the header row.
-            for data_tuple in raw_rows[1:]:
-                # Row dict is keyed by the header name, value is the string
-                # form of the cell. We always store strings (never numbers,
-                # dates, etc.) because everything downstream is going to be
-                # embedded as text anyway.
-                row_dict: Dict[str, str] = {}
-                for col_idx, header in enumerate(headers):
-                    # Some rows are shorter than the header row when the
-                    # sheet has ragged trailing columns. Treat those missing
-                    # cells as None / "".
-                    val = (
-                        data_tuple[col_idx]
-                        if col_idx < len(data_tuple)
-                        else None
-                    )
-                    # Empty cells become empty strings, never None — this
-                    # keeps the chunker's "is value empty?" checks consistent
-                    # without having to handle two different empty sentinels.
-                    row_dict[header] = "" if val is None else str(val)
-
-                # Drop rows whose *every* value is empty after stripping.
-                # These are typically spacer rows added by the author for
-                # visual grouping; keeping them would create empty chunks.
-                if not any(v.strip() for v in row_dict.values()):
-                    continue
-                data_rows.append(row_dict)
-
-            # Store the per-sheet result. The shape mirrors what
-            # chunkers.chunk_excel_sheet expects, so no transformation is
-            # needed downstream.
-            result[sheet_name] = {"headers": headers, "rows": data_rows}
+            # Return every non-empty row as raw cell values, including the first
+            # row, so the LLM classifier can see all sheet data and infer headers,
+            # categories, and row relationships without parser-side assumptions.
+            result[sheet_name] = {"rows": [list(row) for row in raw_rows]}
 
         # RETURN: triggered after every sheet has been processed without
         # error. The dict carries one entry per tab in the original
-        # workbook, with header/row data ready for chunkers.chunk_excel_sheet
-        # to consume. Excel does NOT go through chunk_document — pipeline.py
-        # iterates this dict and calls the Excel-specific chunker per sheet,
-        # so an empty `result` here would silently produce zero chunks for a
-        # supposedly populated workbook.
+        # workbook, with raw row data ready for downstream Excel handling.
         return result
 
     # `finally` guarantees `close()` runs even if an exception propagates.

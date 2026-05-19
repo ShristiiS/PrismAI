@@ -51,6 +51,7 @@ from ingestion.parsers import (
 )
 from ingestion.signal_detector import (
     Strategy,
+    classify_excel_sheet_with_llm,
     detect_docx_strategy,
     detect_email_strategy,
     detect_excel_strategy,
@@ -165,7 +166,7 @@ def _build_base_metadata(
 
 
 def _compute_excel_row_hashes(
-    rows: List[Dict[str, Any]],
+    rows: List[List[Any]],
 ) -> Dict[int, str]:
     """Hash each Excel row's concatenated cell values for diff-based updates.
 
@@ -179,7 +180,7 @@ def _compute_excel_row_hashes(
     # instead of re-embedding 3,000 rows.
     #
     # WHAT THIS BLOCK DOES:
-    # Iterates rows in insertion order, joins all cell values with a pipe,
+    # Iterates data rows (index 1+; row 0 is the header), joins all cell
     # and computes SHA-256 via storage.compute_hash.
     #
     # WHY THIS WAY:
@@ -193,7 +194,9 @@ def _compute_excel_row_hashes(
     # re-embed).
     row_hashes: Dict[int, str] = {}
     for row_index, row in enumerate(rows):
-        joined = "|".join(str(row.get(col, "")) for col in row.keys())
+        if row_index == 0:
+            continue
+        joined = "|".join(str(cell) if cell is not None else "" for cell in row)
         row_hashes[row_index] = compute_hash(joined)
     return row_hashes
 
@@ -453,7 +456,9 @@ def ingest_file(
         if ext == ".xlsx":
             sheet_strategies: List[str] = []
             for sheet_name, sheet_payload in sheet_data.items():
-                detection = detect_excel_strategy(file_path, sheet_name)
+                detection = classify_excel_sheet_with_llm(
+                    sheet_name, sheet_data[sheet_name]["rows"]
+                )
                 sheet_chunks = chunk_excel_sheet(
                     sheet_name,
                     sheet_payload,

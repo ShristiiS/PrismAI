@@ -15,12 +15,16 @@ Public API:
 
 from __future__ import annotations
 
+import json
+import logging
+import os
 import statistics
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
 import fitz  # PyMuPDF
+import httpx
 import openpyxl
 from docx import Document
 
@@ -153,12 +157,12 @@ def detect_excel_strategy(file_path: str, sheet_name: str) -> DetectionResult:
     Runs per sheet, not per workbook. Signals checked in order:
         1. After dropping fully empty rows, if <= 5 rows remain (header
            included) -> single_chunk, high.
-        2. Treat the first non-empty row as headers. For each column,
-           collect non-None values from data rows as strings. If any column
+        2. Treat the first non-empty row as headers. Collect non-None values
+           from the first column across data rows as strings. If that column
            has between 2 and 8 unique values, the total count of values is
            more than 1.5x the unique count, and values appear in >= 50% of
-           data rows -> group_by_column, high (the column's header name is
-           returned in ``group_by_column``).
+           data rows -> group_by_column, high (the first column's header name
+           is returned in ``group_by_column``).
         3. Otherwise -> row_based, high.
 
     Any exception is swallowed and reported as row_based / low, with the
@@ -192,40 +196,38 @@ def detect_excel_strategy(file_path: str, sheet_name: str) -> DetectionResult:
         data_rows = non_empty_rows[1:]
         num_data_rows = len(data_rows)
 
-        for col_idx, header in enumerate(headers):
-            if header is None or str(header).strip() == "":
+        first_header = headers[0] if headers else None
+
+        column_values: list[str] = []
+        for row in data_rows:
+            if not row:
                 continue
-
-            column_values: list[str] = []
-            for row in data_rows:
-                if col_idx >= len(row):
-                    continue
-                value = row[col_idx]
-                if value is None:
-                    continue
-                column_values.append(str(value))
-
-            total_values = len(column_values)
-            if total_values == 0:
+            value = row[0]
+            if value is None:
                 continue
-            unique_count = len(set(column_values))
-            presence_ratio = total_values / num_data_rows if num_data_rows else 0
+            column_values.append(str(value))
 
-            if (
-                2 <= unique_count <= 8
-                and total_values > 1.5 * unique_count
-                and presence_ratio >= 0.5
-            ):
-                return DetectionResult(
-                    strategy=Strategy.group_by_column,
-                    confidence="high",
-                    group_by_column=str(header),
-                    notes=(
-                        f"Column '{header}' has {unique_count} unique values across "
-                        f"{total_values} data rows ({presence_ratio:.0%} populated); "
-                        "rows can be grouped by this column."
-                    ),
-                )
+        total_values = len(column_values)
+        unique_count = len(set(column_values)) if total_values else 0
+        presence_ratio = total_values / num_data_rows if num_data_rows else 0
+
+        if (
+            first_header is not None
+            and str(first_header).strip() != ""
+            and 2 <= unique_count <= 8
+            and total_values > 1.5 * unique_count
+            and presence_ratio >= 0.5
+        ):
+            return DetectionResult(
+                strategy=Strategy.group_by_column,
+                confidence="high",
+                group_by_column=str(first_header),
+                notes=(
+                    f"Column '{first_header}' has {unique_count} unique values across "
+                    f"{total_values} data rows ({presence_ratio:.0%} populated); "
+                    "rows can be grouped by this column."
+                ),
+            )
 
         return DetectionResult(
             strategy=Strategy.row_based,
@@ -411,4 +413,308 @@ def detect_text_strategy(file_path: str) -> DetectionResult:
             strategy=Strategy.recursive_fallback,
             confidence="low",
             notes=f"Failed to inspect text file structure: {exc!r}",
+        )
+
+
+def classify_excel_sheet_with_llm(sheet_name: str, rows: list) -> DetectionResult:
+    """Classify an Excel sheet's chunking strategy with an LLM over raw grid rows.
+
+    One-sentence summary: formats every non-skipped row from ``parse_excel`` as
+    pipe-separated text, asks OpenRouter which of ``row_based``, ``group_by_column``,
+    or ``single_chunk`` keeps related PM context together, and returns a
+    ``DetectionResult`` the Excel chunker can consume.
+
+    Why it exists for PrismAI:
+        Structural heuristics miss OKR rollups, epic blocks with blank group cells,
+        and narrative retros where the header row is content. PMs lose answers when
+        related rows land in different chunks. The classifier reads the full sheet
+        (including row 0) before choosing a strategy or per-row groups.
+
+    Decisions made inside:
+        1. **Pipe-delimited row text** — mirrors how PMs scan spreadsheets and keeps
+           token use predictable for wide exports.
+        2. **Fixed prompt and model** — ``openai/gpt-5.4-nano`` at temperature 0 so
+           classification is repeatable across ingest runs.
+        3. **``row_groups`` in ``notes``** — ``DetectionResult`` has no extra field;
+           JSON in ``notes`` lets ``group_by_column`` chunking read assignments without
+           a schema change.
+        4. **``row_based`` / low on failure** — ingest must not stop when the API or
+           JSON parse fails; row chunks are the safe default.
+
+    Returns:
+        ``DetectionResult`` with ``confidence`` ``high`` on success, or ``row_based`` /
+        ``low`` when anything in the LLM path fails.
+
+    What breaks if this is wrong:
+        Wrong strategy → PM questions return partial OKR or epic context. Crashes on
+        API errors → bulk Drive ingest halts on one bad sheet.
+    """
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        # WHY THIS EXISTS IN PRISM AI:
+        # The model only sees text; we must mirror the sheet row order without
+        # assuming which row is a header.
+        #
+        # WHAT THIS BLOCK DOES:
+        # Build ``Row N: cell | cell`` lines with ``None`` cells as empty strings.
+        #
+        # WHY THIS WAY:
+        # Pipe separators match the prompt examples and stay readable in wide sheets.
+        #
+        # WHAT BREAKS IF THIS IS WRONG:
+        # Dropping row indices or coercing types wrong → groups no longer align with
+        # chunker row numbers.
+        formatted_rows: list[str] = []
+        for row_index, row in enumerate(rows):
+            cells = ["" if cell is None else str(cell) for cell in row]
+            formatted_rows.append(f"Row {row_index}: {' | '.join(cells)}")
+        all_rows_as_text = "\n".join(formatted_rows)
+        total_rows = len(rows)
+
+        # WHY THIS EXISTS IN PRISM AI:
+        # The prompt encodes PM chunking rules and JSON shape; wording is fixed so
+        # evals and regressions stay comparable.
+        #
+        # WHAT THIS BLOCK DOES:
+        # Insert sheet name, row count, and formatted grid into the classifier prompt.
+        #
+        # WHY THIS WAY:
+        # Only the trailing placeholders vary per sheet; the task text stays verbatim.
+        #
+        # WHAT BREAKS IF THIS IS WRONG:
+        # Editing rules or examples → strategy drift and broken ``row_groups`` keys.
+        prompt = (
+            "TASK: Analyze an Excel sheet and determine the best chunking strategy "
+            "for a RAG system. Assign every DATA row to its correct group if rows "
+            "belong together.\n\n"
+            "CONTEXT: You are helping a RAG system used by Product Managers. The "
+            "system needs to chunk Excel sheets intelligently so that related "
+            "information stays together in the same chunk. A chunk is what gets "
+            "stored and retrieved when a PM asks a question. If related rows are "
+            "split into different chunks the PM gets incomplete answers.\n\n"
+            "RULES:\n"
+            "- Read ALL rows carefully before deciding anything\n"
+            "- Row 0 is almost always a header row — identify it and EXCLUDE it "
+            "from row_groups\n"
+            "- Understand how data rows relate to each other\n"
+            "- Understand how data rows relate to columns\n"
+            "- Choose exactly one strategy:\n"
+            "  - row_based: every data row is completely independent, no row needs "
+            "another row for context\n"
+            "  - group_by_column: data rows belong together in groups under a parent "
+            "value, splitting them loses meaning\n"
+            "  - single_chunk: all rows form one continuous narrative, splitting "
+            "loses meaning\n"
+            "- If group_by_column:\n"
+            "  - Identify which column contains the PARENT GROUP values — not the "
+            "detail values\n"
+            "  - A parent group column has a value on the FIRST row of a group and "
+            "empty cells on subsequent rows of the same group\n"
+            "  - Assign EVERY data row to its correct PARENT GROUP value — not to "
+            "its own detail value\n"
+            "  - If a data row has an empty cell in the group column, it belongs to "
+            "the same group as the last non-empty value above it\n"
+            "  - NEVER assign a row to its own unique detail value — that would be "
+            "the same as row_based\n\n"
+            "EXAMPLES:\n\n"
+            "Example 1 — row_based:\n"
+            "Row 0: Ticket ID | Title | Type | Status | Priority\n"
+            "Row 1: TECH-001 | Database schema design | Task | In Progress | P0\n"
+            "Row 2: TECH-003 | Authentication system | Task | Done | P0\n"
+            "Row 3: NUTR-001 | Food diary design | Task | Done | P1\n"
+            "Row 0 is header. Rows 1, 2, 3 are completely independent tickets. "
+            "Strategy: row_based.\n"
+            'row_groups: {"1": "TECH-001", "2": "TECH-003", "3": "NUTR-001"} — '
+            "wait, NO. This is wrong for group_by_column. For row_based, row_groups "
+            "should be empty {}.\n\n"
+            "Example 2 — group_by_column:\n"
+            "Row 0: Objective | Key Result | Status | Owner\n"
+            "Row 1: Ship MVP | Demo completed | Done | Shristi\n"
+            "Row 2:  | Tech spec done | Done | Arjun\n"
+            "Row 3:  | Waitlist 150 users | Done | Ananya\n"
+            "Row 4: User research | 5 interviews completed | Missed | Ananya\n"
+            "Row 5:  | Survey done | Done | Ananya\n"
+            "Row 0 is header. Column 0 (Objective) is the parent group column — it "
+            "has a value on the first row of each group and empty cells on subsequent "
+            "rows of the same group. Rows 2 and 3 have empty Objective — they belong "
+            'to the same group as Row 1 which is "Ship MVP". Rows 4 and 5 belong to '
+            '"User research".\n'
+            "Strategy: group_by_column.\n"
+            "group_by_column_index: 0\n"
+            'row_groups: {"1": "Ship MVP", "2": "Ship MVP", "3": "Ship MVP", '
+            '"4": "User research", "5": "User research"}\n'
+            "NOTE: Row 0 (header) is NOT in row_groups. Every data row is assigned "
+            "to its PARENT OBJECTIVE value — not to its own Key Result value.\n\n"
+            "Example 3 — single_chunk:\n"
+            "Row 0: Retrospective Narrative\n"
+            "Row 1: Sprint summary | Sprint 1 was a foundational sprint...\n"
+            "Row 2: What went well | 1. Arjun spike-first approach worked...\n"
+            "Row 3: What did not go well | 1. Priya mid-sprint start...\n"
+            "Row 4: Key learnings | 1. Architecture decisions need...\n"
+            "Row 5: 3 things to carry forward | 1. Earlier PM involvement...\n"
+            "Rows form continuous narrative. Splitting would separate tightly linked "
+            "context. Strategy: single_chunk.\n"
+            "row_groups: {}\n\n"
+            "FORMAT: Reply in JSON only. No text outside the JSON:\n"
+            "{\n"
+            '  "strategy": "row_based" or "group_by_column" or "single_chunk",\n'
+            '  "group_by_column_index": null or integer (0-based column index),\n'
+            '  "row_groups": {"1": "group value", "2": "group value"},\n'
+            '  "reasoning": "one sentence explaining why"\n'
+            "}\n\n"
+            "IMPORTANT: \n"
+            "- row_groups keys are strings of row indices\n"
+            '- row_groups should NEVER contain row index "0" — that is always the '
+            "header\n"
+            "- For row_based and single_chunk — row_groups must be empty {}\n"
+            "- For group_by_column — every data row index must have a group value "
+            "that is the PARENT GROUP value, not the row's own unique value\n\n"
+            f"Sheet name: {sheet_name}\n"
+            f"Total rows: {total_rows}\n\n"
+            "Complete sheet data:\n"
+            f"{all_rows_as_text}"
+        )
+
+        # WHY THIS EXISTS IN PRISM AI:
+        # OpenRouter credentials and base URL live in env so workers stay deployable
+        # without hard-coded secrets.
+        #
+        # WHAT THIS BLOCK DOES:
+        # Read ``OPENAI_API_KEY`` and ``OPENAI_BASE_URL`` for the chat request.
+        #
+        # WHY THIS WAY:
+        # ``os.getenv`` matches the embedder and keeps one config surface for LLM calls.
+        #
+        # WHAT BREAKS IF THIS IS WRONG:
+        # Missing env → 401 or malformed URL and every sheet falls back to row_based.
+        api_key = os.getenv("OPENAI_API_KEY")
+        base_url = os.getenv("OPENAI_BASE_URL")
+        url = f"{base_url.rstrip('/')}/chat/completions"
+
+        # WHY THIS EXISTS IN PRISM AI:
+        # Provider attribution and auth headers are required for OpenRouter routing.
+        #
+        # WHAT THIS BLOCK DOES:
+        # Build Authorization, Content-Type, HTTP-Referer, and X-Title headers.
+        #
+        # WHY THIS WAY:
+        # Same header set as embeddings so ops dashboards group PrismAI traffic.
+        #
+        # WHAT BREAKS IF THIS IS WRONG:
+        # Wrong bearer token → 401; missing Content-Type → rejected JSON bodies.
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/ShristiiS/PrismAI",
+            "X-Title": "PrismAI",
+        }
+
+        # WHY THIS EXISTS IN PRISM AI:
+        # One user turn carries the full sheet; temperature 0 keeps strategy stable.
+        #
+        # WHAT THIS BLOCK DOES:
+        # POST chat completions with model ``openai/gpt-5.4-nano`` and max_tokens 4000.
+        #
+        # WHY THIS WAY:
+        # ``httpx.post`` with a 60s timeout matches embedder networking choices.
+        #
+        # WHAT BREAKS IF THIS IS WRONG:
+        # Truncated output → invalid JSON; long timeouts → stuck ingest workers.
+        payload = {
+            "model": "openai/gpt-5.4-nano",
+            "max_tokens": 4000,
+            "temperature": 0,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        response = httpx.post(url, headers=headers, json=payload, timeout=60.0)
+        response.raise_for_status()
+
+        # WHY THIS EXISTS IN PRISM AI:
+        # Models often wrap JSON in markdown fences despite the format instruction.
+        #
+        # WHAT THIS BLOCK DOES:
+        # Pull assistant text, strip ```json fences, and ``json.loads`` the payload.
+        #
+        # WHY THIS WAY:
+        # Fence stripping before parse avoids brittle failures on cosmetic wrapping.
+        #
+        # WHAT BREAKS IF THIS IS WRONG:
+        # Parsing raw fenced text → JSONDecodeError and row_based fallback every time.
+        response_data = response.json()
+        content = response_data["choices"][0]["message"]["content"]
+        if not isinstance(content, str):
+            raise ValueError("LLM response content is not a string")
+
+        cleaned_content = content.strip()
+        if cleaned_content.startswith("```json"):
+            cleaned_content = cleaned_content[7:]
+        elif cleaned_content.startswith("```"):
+            cleaned_content = cleaned_content[3:]
+        if cleaned_content.endswith("```"):
+            cleaned_content = cleaned_content[:-3]
+        cleaned_content = cleaned_content.strip()
+
+        parsed = json.loads(cleaned_content)
+        strategy_value = parsed.get("strategy")
+        group_by_column_index = parsed.get("group_by_column_index")
+        row_groups = parsed.get("row_groups", {})
+        reasoning = parsed.get("reasoning", "")
+
+        # WHY THIS EXISTS IN PRISM AI:
+        # Downstream chunkers branch on ``Strategy`` enum values, not raw strings.
+        #
+        # WHAT THIS BLOCK DOES:
+        # Map the model's strategy string to ``DetectionResult`` fields per strategy.
+        #
+        # WHY THIS WAY:
+        # ``group_by_column`` stores row assignments in ``notes``; other strategies
+        # keep human-readable reasoning there.
+        #
+        # WHAT BREAKS IF THIS IS WRONG:
+        # Missing ``group_by_column`` name or row_groups JSON → epic rows split apart.
+        if strategy_value == "group_by_column":
+            column_name: Optional[str] = None
+            if group_by_column_index is not None and rows:
+                first_row = rows[0]
+                if (
+                    isinstance(group_by_column_index, int)
+                    and 0 <= group_by_column_index < len(first_row)
+                ):
+                    header_cell = first_row[group_by_column_index]
+                    if header_cell is not None:
+                        column_name = str(header_cell)
+
+            return DetectionResult(
+                strategy=Strategy.group_by_column,
+                confidence="high",
+                group_by_column=column_name,
+                notes=json.dumps(row_groups),
+            )
+
+        if strategy_value == "single_chunk":
+            return DetectionResult(
+                strategy=Strategy.single_chunk,
+                confidence="high",
+                notes=reasoning,
+            )
+
+        return DetectionResult(
+            strategy=Strategy.row_based,
+            confidence="high",
+            notes=reasoning,
+        )
+
+    except Exception as exc:
+        logger.error(
+            "LLM Excel classification failed for sheet %s: %s",
+            sheet_name,
+            exc,
+            exc_info=True,
+        )
+        return DetectionResult(
+            strategy=Strategy.row_based,
+            confidence="low",
+            notes=f"LLM classification failed: {exc}",
         )
