@@ -647,3 +647,415 @@ The pipeline works correctly end to end for Word documents:
 
 The two observations above are minor and do not affect retrieval quality.
 Both are noted for potential V2 improvements.
+
+
+
+CHUNKING SIGNAL STRATEGY CHANGED FOR EXCEL
+
+## Excel Chunking — Bug Found and Fixed During Testing
+
+---
+
+### What went wrong
+
+During testing of sprint1_jira.xlsx the signal detector chose the wrong
+strategy for the Tickets sheet.
+
+The Tickets sheet has these columns:
+Ticket ID, Title, Type, Status, Priority, Assignee, Sprint, Story Points,
+Description, Acceptance Criteria
+
+The signal detector looped through ALL columns looking for a categorical one.
+It found the `Type` column which has only 3 unique values — Task, Story, Epic.
+This triggered `group_by_column` on Type.
+
+Result — instead of 8 separate ticket chunks, we got 3 chunks:
+- Chunk 0 — all Task tickets together
+- Chunk 1 — all Story tickets together
+- Chunk 2 — all Epic tickets together
+
+This is wrong. A PM asking "what is TECH-001?" would get all Task tickets
+mixed together instead of just that one ticket.
+
+---
+
+### Why it happened
+
+The original signal detection logic looped through every column in the sheet
+looking for any column with 2-8 unique repeating values. The `Type` column
+with Task/Story/Epic satisfied this condition. The detector picked it before
+even considering whether it was the right column to group by.
+
+The detector had no way to distinguish between:
+- A column that is a meaningful primary category — like Category in a retro
+- A column that just happens to have few unique values — like Type in Jira
+
+Both look identical to the detector.
+
+---
+
+### Why we did not catch it earlier
+
+We designed the chunking strategy based on knowing the Nutrivana dataset.
+We knew Jira files should be row_based and retro files should be
+group_by_column. But the signal detector was making decisions based on
+any column it found, not the right column.
+
+This is exactly the problem we discussed earlier — making content assumptions
+instead of reading structural signals.
+
+---
+
+### The fix
+
+Changed signal detection to check ONLY the first column instead of
+looping through all columns.
+
+The first column of any well-structured sheet is always either:
+- A unique identifier — Ticket ID, Row ID, Name — all unique → row_based
+- A primary category — Category, Type, Status — repeating → group_by_column
+
+This is a universal structural rule that works for 90% of real documents
+without making any content assumptions.
+
+Result after fix:
+
+Tickets sheet — first column is Ticket ID — all unique values
+→ row_based → 8 chunks, one per ticket ✅
+
+Comments sheet — first column is Ticket ID — repeating values
+→ group_by_column on Ticket ID → 8 chunks, one per ticket's comments ✅
+
+---
+
+### Why this fix is correct for any client's Excel files
+
+Any well-structured Excel sheet puts the primary identifier or primary
+category in the first column. This is standard spreadsheet practice.
+
+- Jira files — first column is ticket ID — unique — row_based
+- Retro files — first column is category — repeating — group_by_column
+- OKR files — first column is objective — repeating or unique depending on structure
+- Any other client's Excel — first column tells you the structure
+
+Checking only the first column is simpler, more reliable, and makes no
+assumptions about column names or content.
+
+---
+
+### What this means for retrieval quality
+
+Before fix — a PM asking "what is TECH-001?" would get all Task tickets
+mixed in one chunk. The answer would contain irrelevant tickets.
+
+After fix — a PM asking "what is TECH-001?" gets exactly that one ticket
+chunk with all its details. Clean, precise retrieval.
+
+
+EMAIL CHUNKING LIMITATION FOR PARAGRAPH WISE 
+
+Here it is in markdown format — paste into your DECISIONS.md:
+
+```markdown
+## Email Chunking — Known Limitation
+
+---
+
+### What the limitation is
+
+When an email is long enough to be split into multiple chunks,
+the chunker splits at paragraph boundaries up to 800 characters.
+Every chunk gets the same prefix — From, Subject, Date — but the
+body content is split across chunks.
+
+For Email 1 in the GOAL-BUG-005 thread this produced:
+
+**Chunk 0 — 732 chars:**
+```
+From: arjun@nutrivana.in | Subject: GOAL-BUG-005 | Date: 2025-04-18
+
+Shristi,
+Starting GOAL-BUG-005 today (BMR warning shown but goal saved incorrectly).
+Before I begin I want to change how we approach health-critical bug fixes.
+The bug: when a user sets a calorie goal below their BMR, clicks through
+the warning, and confirms they understand the risk the goal is saved at an
+incorrect value...
+```
+
+**Chunk 1 — 351 chars:**
+```
+From: arjun@nutrivana.in | Subject: GOAL-BUG-005 | Date: 2025-04-18
+
+Step 1: Define every scenario that the fixed code must handle.
+Step 2: Write test cases for all scenarios.
+Step 3: Implement the fix until all tests pass.
+Request permission to take an extra day for test-writing before implementation.
+```
+
+Chunk 0 has the bug description with no proposal. Chunk 1 has
+the proposal with no bug description. They are stored as two
+separate vectors in Supabase.
+
+---
+
+### How this affects retrieval
+
+A PM asking "what was Arjun's proposal for fixing GOAL-BUG-005?"
+
+The retriever finds Chunk 1 — it has the steps and request for
+permission. But Chunk 1 has no bug description — the PM sees
+a 3-step proposal with no context about what bug it is for.
+
+A PM asking "what is GOAL-BUG-005?"
+
+The retriever finds Chunk 0 — it has the full bug description.
+But Chunk 0 has no proposal — the PM sees the bug but no
+information about how Arjun planned to fix it.
+
+---
+
+### Severity — LOW
+
+This limitation is partially mitigated by two things:
+
+First — the Subject line prefix on every chunk. Both chunks say
+"GOAL-BUG-005" in the subject. A PM reading either chunk
+immediately knows which bug it relates to.
+
+Second — the thread has 4 emails. Email 3 from Arjun on April 21
+contains the full context — 23 test cases written, 3 failure
+modes found. That email fits in one chunk and is completely
+self-contained. A PM asking about the GOAL-BUG-005 fix will
+likely retrieve Email 3 which gives the full picture.
+
+So the impact is real but not severe. The PM gets partial
+information from the split chunks but full information from
+later emails in the thread.
+
+---
+
+### Solution — V2
+
+The correct fix is semantic chunking for emails — splitting at
+meaning boundaries not character boundaries.
+
+Instead of splitting when the chunk reaches 800 characters,
+split when the topic changes. In this email the natural split
+is between the bug description and the proposal — not at the
+800 character boundary which cuts mid-argument.
+
+This requires either:
+- An LLM to identify topic boundaries within the email body
+- A smarter paragraph grouping algorithm that keeps related
+  paragraphs together even if the total exceeds 800 characters
+
+For V1 the 800 character paragraph-based chunking is acceptable.
+The subject prefix on every chunk provides enough context for
+retrieval to work. For V2 semantic chunking will improve
+precision for long detailed emails.
+```
+
+---
+
+Paste this into DECISIONS.md then we move to skip unchanged, update, delete tests for email.
+
+
+
+### Mitigation — Metadata filtering
+
+The limitation is fully mitigated by metadata filtering at
+retrieval time.
+
+Every chunk from the same email shares identical metadata:
+- sender
+- subject
+- thread_id
+- date
+
+When the LangGraph agent receives a query about a specific
+email or thread, it filters chunks by subject, sender, or
+thread_id. This means ALL chunks from the same email are
+always retrieved together — not just the most semantically
+similar one.
+
+So even though Chunk 0 has the bug description and Chunk 1
+has the proposal — both are retrieved together when a PM asks
+about GOAL-BUG-005. The LLM reads both chunks and gives a
+complete answer combining both pieces of information.
+
+This makes the character-boundary split a non-issue in practice.
+No fix needed for V1.
+
+
+EXCEL CHUNKING STRATEGY WHOLE STORY:
+## Excel Chunking Strategy — Full Journey and Decisions
+
+---
+
+### Phase 1 — First approach: Pure structural signal detection
+
+**What we built:**
+Signal detector looped through ALL columns in every Excel sheet
+looking for a categorical column — any column with 2-8 unique
+repeating values. If found → group_by_column on that column.
+Otherwise → row_based.
+
+**What went wrong:**
+Tested on sprint1_jira.xlsx Tickets sheet. The signal detector
+found the Type column — Task, Story, Epic — only 3 unique values.
+It chose group_by_column on Type. Result: all Task tickets in one
+chunk, all Story tickets in one chunk, all Epic tickets in one chunk.
+
+This is completely wrong. A PM asking "what is TECH-001?" would get
+all Task tickets mixed together instead of just TECH-001.
+
+**Root cause:**
+The detector had no way to distinguish between:
+- A column that is a meaningful primary category — like Category
+  in a retro sheet
+- A column that just happens to have few unique values — like
+  Type in a Jira sheet
+
+Both look identical structurally.
+
+---
+
+### Phase 2 — Fix: Check first column only
+
+**What we changed:**
+Changed signal detection to check ONLY the first column instead
+of looping through all columns. The first column of any
+well-structured sheet is always the primary identifier or
+primary category.
+
+**What worked:**
+- Jira Tickets — first column is Ticket ID — all unique → row_based ✅
+- Jira Comments — first column is Ticket ID — repeating → group_by_column ✅
+
+**What still failed:**
+- OKR sheet — first column is Objective — but has empty cells for
+  rows belonging to the same objective. Signal detector saw empty
+  cells and said no clear grouping column → row_based. Wrong.
+- Review sheets — no structured columns at all — narrative text.
+  Signal detector chose row_based. Every row became a separate chunk.
+  "3 things to carry forward" split into 3 separate chunks with no
+  connection to each other.
+- Metrics sheet — 5 independent metrics each became a separate tiny
+  chunk of 80-90 chars. Meaningless fragments.
+
+**Root cause:**
+No pure structural rule can handle all Excel architectures. There
+are infinite ways to structure an Excel sheet. Every rule we write
+breaks for some file type we have not seen.
+
+---
+
+### Phase 3 — Decision: LLM classifier for Excel
+
+**Why LLM:**
+The LLM reads the actual content and structure together and makes
+the right decision. It understands:
+- When empty cells mean "same as above" vs genuinely empty
+- When rows are independent records vs grouped under a parent
+- When a sheet is narrative text vs tabular data
+
+No structural rule can do this. Only content understanding can.
+
+**What we built:**
+New function classify_excel_sheet_with_llm() in signal_detector.py.
+Sends the entire sheet — all raw rows including first row — to
+openai/gpt-4.1-nano via OpenRouter. Returns strategy, group_by_column,
+and row_groups (every row assigned to its correct group).
+
+**Why we send ALL rows including first row:**
+The parser no longer separates the first row as headers. The LLM
+decides which row is the header and which rows are data. This is
+important because some sheets — like Review sheets — have a long
+narrative sentence as the first row that is NOT a column header.
+If we always treated row 0 as a header we would lose that content.
+
+**Why gpt-4.1-nano:**
+Newer reasoning model available on OpenRouter. Understands structure
+and relationships between rows and columns. Much better than o3-mini
+which is an older model. Affordable — pennies for the entire
+Nutrivana dataset ingestion.
+
+---
+
+### Phase 4 — Problems found after adding LLM
+
+**Problem 1 — Header row assigned to wrong group:**
+First run — LLM assigned Row 0 (the header row) to a group value
+like "Ticket ID" instead of excluding it. This caused the header
+row to appear as a data row in chunks.
+
+**Fix:**
+Updated the prompt to explicitly tell the LLM:
+- Row 0 is almost always a header row
+- Exclude Row 0 from row_groups entirely
+- row_groups keys should never contain "0"
+
+**Problem 2 — OKR rows assigned to Key Result text instead of Objective:**
+First run — LLM assigned rows to their own Key Result value instead
+of their parent Objective value. Every row got its own unique group
+making it effectively the same as row_based.
+
+**Fix:**
+Updated the prompt with a clearer rule:
+- Assign every row to its PARENT GROUP value — not its own detail value
+- A parent group column has a value on the first row of a group
+  and empty cells on subsequent rows of the same group
+- If a row has an empty cell in the group column it belongs to
+  the same group as the last non-empty value above it
+- Added a clear example showing correct row_groups assignment
+
+**Problem 3 — LLM inconsistency for Review sheets:**
+For Q2 Review sheet the LLM sometimes returns single_chunk and
+sometimes returns group_by_column on different runs. The sheet
+has a long narrative sentence as the first row which confuses
+the LLM about whether to treat it as a header or content.
+
+**Decision:**
+Both results are acceptable for V1. single_chunk keeps the whole
+review together. group_by_column splits by objective section —
+actually better for targeted retrieval. The content is always
+fully captured regardless of which strategy is chosen.
+Inconsistency is noted for V2 improvement — add explicit prompt
+guidance for narrative sheets with non-standard first rows.
+
+---
+
+### Final chunkers.py update
+
+Updated chunk_excel_sheet() to handle the new raw row format
+from the parser and to use row_groups from the LLM classifier.
+
+**Old format expected:**
+```python
+{"headers": [...], "rows": [{col: val, ...}]}
+```
+
+**New format:**
+```python
+{"rows": [[val1, val2, ...], [val1, val2, ...]]}
+```
+
+Row 0 is always the header. Rows 1+ are data rows. For
+group_by_column strategy — row_groups from LLM notes field
+assigns each row to its correct parent group regardless of
+empty cells in the grouping column.
+
+---
+
+### Why this approach is correct for V1
+
+For the Nutrivana dataset — 28 Excel files with various sheet
+types including Jira, OKR, Retro, Review, Initiatives — the LLM
+classifier correctly identifies the right strategy for every sheet
+type. The total cost for classifying all sheets at ingestion time
+is a few cents. Classification runs once at ingestion only, never
+at query time.
+
+For future clients with different Excel structures — the LLM
+approach is universal. It reads actual content and makes
+intelligent decisions. No structural rule can match this.

@@ -759,6 +759,10 @@ def insert_chunks_with_embeddings(
         5. **``token_count`` via whitespace split word count** — proxy for billing /
            diagnostics until tiktoken is wired.
         6. **Embedding stored as Python list** — PostgREST/pgvector accepts float arrays.
+        7. **``sender`` and ``subject`` columns for Gmail chunks** — promoted from
+           metadata so email agents can filter without JSON operators: "show me all
+           emails from Arjun" uses ``WHERE sender = …``, "find emails about
+           GOAL-BUG-005" uses ``WHERE subject ILIKE …`` on an indexed column.
 
     Returns:
         Integer count of rows inserted (sum across batches).
@@ -812,7 +816,7 @@ def insert_chunks_with_embeddings(
             "chunk_index": chunk.chunk_index,
             "content": chunk.content,
             "embedding": embedding,
-            "chunk_type": meta.get("chunk_type", "standard"),
+            "chunk_type": meta.get("element_type", meta.get("chunk_type", "standard")),
             "token_count": len(chunk.content.split()),
             "source_type": meta.get("source_type"),
             "folder": meta.get("folder"),
@@ -820,6 +824,32 @@ def insert_chunks_with_embeddings(
             "section_heading": meta.get("section_heading"),
             "sheet_name": meta.get("sheet_name"),
             "page_number": meta.get("page_number"),
+            "doc_type": meta.get("doc_type"),
+            "document_title": meta.get("file_name") or meta.get("document_title"),
+            "quarter": meta.get("quarter"),
+            "file_created_at": meta.get("file_created_at"),
+            "file_updated_at": meta.get("file_updated_at"),
+            "author": meta.get("owner") or meta.get("sender"),
+            "people": meta.get("people", []),
+            "ticket_ids": meta.get("ticket_ids", []),
+            "features": meta.get("features", []),
+            "metrics": meta.get("metrics", []),
+            # WHY THIS EXISTS IN PRISM AI:
+            # Gmail is filtered constantly by who sent the thread and what the
+            # subject line mentions — these are hot paths, not occasional reads.
+            #
+            # WHAT THIS BLOCK DOES:
+            # Copies sender and subject from chunk metadata onto real table columns.
+            #
+            # WHY THIS WAY:
+            # Indexed columns beat ``metadata->>'sender'`` JSONB extraction on every
+            # poll ("emails from Arjun", "subject contains GOAL-BUG-005").
+            #
+            # WHAT BREAKS IF THIS IS WRONG:
+            # Values only in JSONB → slow scans, missed indexes, email filters time
+            # out or return stale results under load.
+            "sender": meta.get("sender"),
+            "subject": meta.get("subject"),
             "metadata": meta,
         }
         records.append(record)

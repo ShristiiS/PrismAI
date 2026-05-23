@@ -34,10 +34,14 @@ What breaks if this module is wrong:
 from __future__ import annotations
 
 import hashlib  # noqa: F401  (kept per spec; storage.compute_hash is the canonical hasher)
+import json
 import logging
+import re
 import os  # noqa: F401  (kept per spec; ``load_dotenv`` populates os.environ)
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+import httpx
 
 from dotenv import load_dotenv
 
@@ -206,6 +210,562 @@ def _compute_excel_row_hashes(
 # ──────────────────────────────────────────────────────────────────────────
 
 
+def _derive_doc_type(title: str, ext: str) -> str:
+    """Infer a stable ``doc_type`` label from the file title and extension.
+
+    One-sentence summary: maps Drive filenames + extensions to the vocabulary
+    PrismAI uses in Supabase filters (``jira``, ``retro``, ``prd``, etc.) so
+    agents can scope retrieval without parsing paths at query time.
+
+    Why it exists for PrismAI:
+        Connectors pass a raw title and extension; chunk rows need a normalized
+        ``doc_type`` column for PM filters ("show me all retros", "only Jira
+        exports"). Filename heuristics match how Nutrivana names artefacts
+        (``Sprint_10_Jira.xlsx``, ``Q2_OKR.docx``) without an LLM on every file.
+
+    Returns:
+        A short string tag stored on document/chunk rows (never ``None``).
+
+    What breaks if this is wrong:
+        Wrong tag → filter queries return empty sets or mix unrelated formats
+        (e.g. treating a PRD as a generic ``document``).
+    """
+    title_lower = title.lower()
+
+    # WHY THIS EXISTS IN PRISM AI:
+    # Excel workbooks are the most heterogeneous format — Jira dumps, OKR
+    # rollups, and retros all share ``.xlsx`` but need different retrieval
+    # behaviour and UI labels.
+    #
+    # WHAT THIS BLOCK DOES:
+    # Substrings in the lowercase title pick a specialised doc_type; otherwise
+    # we fall back to ``spreadsheet``.
+    #
+    # WHY THIS WAY:
+    # Title keywords are how PMs actually name files in Drive; extension alone
+    # cannot distinguish Jira from OKR sheets.
+    #
+    # WHAT BREAKS IF THIS IS WRONG:
+    # A Jira export labelled ``spreadsheet`` → sprint/ticket filters miss it.
+    if ext == ".xlsx":
+        if "jira" in title_lower:
+            return "jira"
+        if "retro" in title_lower:
+            return "retro"
+        if "okr" in title_lower:
+            return "okr"
+        if "roadmap" in title_lower:
+            return "roadmap"
+        return "spreadsheet"
+
+    # WHY THIS EXISTS IN PRISM AI:
+    # Word docs carry planning specs, meeting notes, and PRDs — all ``.docx``
+    # but different PM question patterns at retrieval time.
+    #
+    # WHAT THIS BLOCK DOES:
+    # Title keyword routing for Word; default ``document`` for generic docs.
+    #
+    # WHY THIS WAY:
+    # ``meeting`` and ``sync`` both catch "Weekly Sync" and "Sprint 8 Meeting".
+    #
+    # WHAT BREAKS IF THIS IS WRONG:
+    # PRDs stored as ``document`` → "show PRDs only" filters exclude real PRDs.
+    if ext == ".docx":
+        if "planning" in title_lower:
+            return "planning"
+        if "meeting" in title_lower or "sync" in title_lower:
+            return "meeting_notes"
+        if "spec" in title_lower or "technical" in title_lower:
+            return "technical_spec"
+        if "prd" in title_lower:
+            return "prd"
+        return "document"
+
+    # WHY THIS EXISTS IN PRISM AI:
+    # Scanned/exported PDFs are a distinct artefact class (page-based chunking,
+    # no Word structure). Single extension → single type keeps routing simple.
+    if ext == ".pdf":
+        return "pdf"
+
+    # WHY THIS EXISTS IN PRISM AI:
+    # Plain text and markdown exports (release notes, ADRs) share one chunker
+    # path; one label avoids duplicating logic for ``.txt`` vs ``.md``.
+    if ext in (".txt", ".md"):
+        return "markdown"
+
+    # WHY THIS EXISTS IN PRISM AI:
+    # Decks use slide-based chunking; ``presentation`` signals that to filters
+    # and ranking without inspecting chunk metadata.
+    if ext == ".pptx":
+        return "presentation"
+
+    # WHY THIS EXISTS IN PRISM AI:
+    # Unknown extensions still need a non-null doc_type for NOT NULL columns
+    # and consistent filter UX.
+    return "document"
+
+
+def _derive_quarter(sprint: Optional[str]) -> Optional[str]:
+    """Map a Nutrivana sprint number to a calendar quarter label.
+
+    One-sentence summary: converts sprint ``"1"``–``"13"`` into ``Q1``–``Q4``
+    using the fixed sprint calendar baked into the Nutrivana dataset.
+
+    Why it exists for PrismAI:
+        Many files lack explicit quarter metadata from Drive. Sprint number is
+        the reliable join key PMs already use ("Sprint 8 retro"). Denormalising
+        quarter onto chunks lets agents filter ``WHERE quarter = 'Q2'`` without
+        joining a sprint calendar table at query time.
+
+    Returns:
+        ``"Q1"``, ``"Q2"``, ``"Q3"``, ``"Q4"``, or ``None`` when sprint is
+        missing or not in the 1–13 range.
+
+    What breaks if this is wrong:
+        Wrong quarter → cross-quarter retrieval (Q1 OKR text answering a Q2
+        question). ``None`` when sprint was valid → quarter filter returns
+        nothing for otherwise good content.
+    """
+    # WHY THIS EXISTS IN PRISM AI:
+    # Gmail and some Drive paths only discover sprint late; empty string and
+    # None must both mean "unknown quarter" not a bogus Q label.
+    #
+    # WHAT THIS BLOCK DOES:
+    # Early exit when sprint is falsy.
+    #
+    # WHAT BREAKS IF THIS IS WRONG:
+    # Treating ``""`` as sprint 0 → wrong quarter or conversion errors.
+    if not sprint:
+        return None
+
+    # WHY THIS EXISTS IN PRISM AI:
+    # Sprint is stored as TEXT in Supabase; connectors may pass ``"08"`` or
+    # non-numeric junk from folder names — we must not crash ingestion.
+    #
+    # WHAT THIS BLOCK DOES:
+    # Parses sprint to integer; returns None on failure.
+    #
+    # WHAT BREAKS IF THIS IS WRONG:
+    # Uncaught ValueError → entire file ingest fails for one bad folder tag.
+    try:
+        sprint_num = int(sprint)
+    except (ValueError, TypeError):
+        return None
+
+    # WHY THIS EXISTS IN PRISM AI:
+    # Nutrivana runs 13 sprints across four quarters (3+3+3+4). This mapping
+    # is dataset-specific but stable for V1 demos and evals.
+    #
+    # WHAT THIS BLOCK DOES:
+    # Bucket sprint_num into Q1–Q4 by inclusive ranges.
+    #
+    # WHAT BREAKS IF THIS IS WRONG:
+    # Off-by-one at boundaries (e.g. sprint 3 vs 4) mis-tags an entire quarter
+    # of artefacts.
+    if 1 <= sprint_num <= 3:
+        return "Q1"
+    if 4 <= sprint_num <= 6:
+        return "Q2"
+    if 7 <= sprint_num <= 9:
+        return "Q3"
+    if 10 <= sprint_num <= 13:
+        return "Q4"
+    return None
+
+
+def _derive_quarter_from_sheet(sheet_name: str) -> Optional[str]:
+    """Derive quarter from sheet name if it starts with Q1, Q2, Q3 or Q4."""
+    if not sheet_name:
+        return None
+    name = sheet_name.strip().upper()
+    if name.startswith("Q1"):
+        return "Q1"
+    elif name.startswith("Q2"):
+        return "Q2"
+    elif name.startswith("Q3"):
+        return "Q3"
+    elif name.startswith("Q4"):
+        return "Q4"
+    return None
+
+
+# Nutrivana sprint → approximate start date (ISO). Used when Drive omits
+# created_at but the connector knows sprint from folder path or filename.
+_SPRINT_START_DATES: Dict[str, str] = {
+    "1": "2025-01-01",
+    "2": "2025-01-15",
+    "3": "2025-01-29",
+    "4": "2025-02-12",
+    "5": "2025-02-26",
+    "6": "2025-03-12",
+    "7": "2025-03-26",
+    "8": "2025-04-09",
+    "9": "2025-04-23",
+    "10": "2025-05-07",
+    "11": "2025-05-21",
+    "12": "2025-06-04",
+    "13": "2025-06-18",
+}
+
+
+def _derive_file_date(
+    sprint: Optional[str],
+    file_created_at: Optional[str],
+) -> Optional[str]:
+    """Resolve ``file_created_at`` from Drive metadata or sprint calendar.
+
+    One-sentence summary: returns the connector-supplied timestamp when present;
+    otherwise looks up a synthetic start date from the Nutrivana sprint map.
+
+    Why it exists for PrismAI:
+        Sorting and "what changed this sprint?" UX need a date on every chunk row.
+        Drive sometimes omits ``createdTime`` on shared shortcuts; sprint inferred
+        from folder path is still trustworthy enough for V1 ordering and filters.
+
+    Returns:
+        An ISO date string, or ``None`` when neither Drive nor sprint can
+        supply a date.
+
+    What breaks if this is wrong:
+        Synthetic dates on wrong sprint → timeline answers cite files as if they
+        were written weeks earlier/later than reality.
+    """
+    # WHY THIS EXISTS IN PRISM AI:
+    # Real Drive timestamps are authoritative when the connector has them —
+    # never overwrite with synthetic sprint dates.
+    #
+    # WHAT THIS BLOCK DOES:
+    # Passes through non-None ``file_created_at`` unchanged.
+    #
+    # WHAT BREAKS IF THIS IS WRONG:
+    # Overwriting real dates → provenance and "recently updated" sorts lie.
+    if file_created_at is not None:
+        return file_created_at
+
+    # WHY THIS EXISTS IN PRISM AI:
+    # Without sprint we have no fallback in the Nutrivana calendar table.
+    if sprint is None:
+        return None
+
+    # WHY THIS EXISTS IN PRISM AI:
+    # Sprint keys are strings to match TEXT sprint columns and regex extractors
+    # that return ``"8"`` not ``8``.
+    #
+    # WHAT THIS BLOCK DOES:
+    # Looks up sprint in ``_SPRINT_START_DATES``; unknown sprints → None.
+    #
+    # WHAT BREAKS IF THIS IS WRONG:
+    # Missing key for sprint 8 → chunks store NULL dates despite known sprint.
+    return _SPRINT_START_DATES.get(str(sprint))
+
+
+_EMPTY_CHUNK_METADATA: Dict[str, List[str]] = {
+    "people": [],
+    "ticket_ids": [],
+    "features": [],
+    "metrics": [],
+}
+
+_VALID_TICKET_PATTERN = re.compile(
+    r"^(TECH|GOAL|NUTR|CF|AN|BUG|MON|RES|RET|ONBD|PRE|MET|NPS|MKT|FUN|V2|INVEST|"
+    r"GOAL-BUG|NUTR-BUG|AN-BUG|CF-BUG|AN-CR|GOAL-SPIKE|NUTR-TASK|NUTR-EPIC|GOAL-EPIC|CF-EPIC)"
+    r"-\d+(-COMPLETE)?$"
+)
+
+
+def extract_chunk_metadata(content: str, feature_catalog: list[str]) -> dict:
+    """Extract people, tickets, features, and metrics from one chunk via LLM.
+
+    WHAT THIS FUNCTION DOES FOR PRISM AI:
+        After chunking, each ``document_chunks`` row can carry denormalised
+        ``people``, ``ticket_ids``, ``features``, and ``metrics`` columns for
+        fast filters ("what did Arjun ship?", "chunks mentioning TECH-001",
+        "OKR metrics for Bar Graph"). This function calls gpt-4.1-nano on
+        OpenRouter to read one chunk plus the canonical feature catalog and
+        return those four lists without blocking ingest on failure.
+
+    WHY WE EXTRACT THESE FOUR FIELDS:
+        - people: PM questions are often person-centric ("what did Arjun say
+          about RLS?"); first-name tags match how the team refers to each other.
+        - ticket_ids: Jira-style IDs are the join key between email, docs, and
+          sheets; indexed ticket columns power "everything about GOAL-BUG-005".
+        - features: Canonical product names from the catalog link chunks across
+          formats (PRD, retro, Jira) when wording differs.
+        - metrics: Retention, MAU, NPS, etc. let agents answer metric questions
+          without regex over arbitrary percentages in body text.
+
+    WHY WE NEED THE FEATURE CATALOG:
+        Feature names in docs are inconsistent ("goal snapshots" vs "Goal
+        Snapshots", ticket aliases). The catalog is the single source of truth;
+        the model must return only canonical strings present in that list (max
+        three per chunk) so filters and dashboards stay stable.
+
+    WHAT HAPPENS IF EXTRACTION FAILS:
+        Any API, parse, or schema error logs once and returns four empty lists so
+        ingest continues; chunks still store content and embeddings, only the
+        enrichment columns are blank until re-ingest.
+    """
+    logger = logging.getLogger(__name__)
+
+    word_count = len(content.split())
+    if word_count < 20:
+        return dict(_EMPTY_CHUNK_METADATA)
+
+    try:
+        # WHY THIS EXISTS IN PRISM AI:
+        # Short chunks (headings, "Action Items" alone) waste LLM calls and invite
+        # hallucinated tickets/features. The prompt adds three feature-matching
+        # methods (ticket alias, topic, when-in-doubt) plus explicit anti-hallucination
+        # rules; regex ticket validation is a second guard after parse.
+        #
+        # WHAT THIS BLOCK DOES:
+        # Builds the v2 extractor prompt with catalog, chunk text, METHOD 1–3
+        # feature rules, and CRITICAL literal-only extraction guardrails.
+        #
+        # WHY THIS WAY:
+        # Ticket→feature examples in the prompt teach alias matching without a second
+        # DB join; topic examples cover chunks that mention features without ticket IDs.
+        #
+        # WHAT BREAKS IF THIS IS WRONG:
+        # Vague prompt → WAITLIST/USDA tagged as tickets; invented features break
+        # ``WHERE features @> …`` filters; missing METHOD 2 → topic-only chunks get [].
+        feature_catalog_str = (
+            "\n".join(f["name"] for f in feature_catalog)
+            if feature_catalog
+            else "(empty catalog — return no features)"
+        )
+        prompt = (
+            "TASK:\n"
+            "Extract four types of metadata from a product document chunk for PrismAI — "
+            "a PM assistant tool for Nutrivana, an Indian nutrition tracking app.\n\n"
+            "CONTEXT:\n"
+            "Chunks come from sprint planning docs, meeting notes, Jira tickets, "
+            "retrospectives, OKR documents, and internal emails written by the Nutrivana "
+            "team between January 2025 and June 2025.\n\n"
+            "RULES:\n\n"
+            "1. people:\n"
+            "Extract ONLY these six Nutrivana team members when their name appears "
+            "explicitly in the text:\n"
+            "Arjun, Shristi, Priya, Kabir, Ananya, Ravi.\n"
+            "Use first name only.\n"
+            "DO NOT extract names that are not in this list.\n"
+            "DO NOT invent names if the chunk is short or has no names.\n"
+            "If no team member name appears in the text — return empty list.\n\n"
+            "2. ticket_ids:\n"
+            "Extract ONLY strings that exactly match these patterns:\n"
+            "TECH-XXX, GOAL-XXX, NUTR-XXX, CF-XXX, AN-XXX, BUG-XXX, MON-XXX, RES-XXX, "
+            "RET-XXX, ONBD-XXX, PRE-XXX, MET-XXX, NPS-XXX, MKT-XXX, FUN-XXX, V2-XXX, "
+            "INVEST-XXX, GOAL-BUG-XXX, NUTR-BUG-XXX, AN-BUG-XXX, CF-BUG-XXX, AN-CR-XXX, "
+            "GOAL-SPIKE-XXX, NUTR-TASK-XXX, NUTR-EPIC-XXX, GOAL-EPIC-XXX, CF-EPIC-XXX\n"
+            "where XXX is one or more digits.\n"
+            "DO NOT extract words like WAITLIST, USDA, PRD, MVP, IST, EER, JWT as ticket IDs.\n"
+            "DO NOT invent ticket IDs. Only extract what literally appears in the text.\n\n"
+            "3. features:\n"
+            "Match the chunk against the feature catalog using THREE methods in order:\n\n"
+            "METHOD 1 — Ticket ID match:\n"
+            "If a ticket ID in the chunk appears in a feature's aliases — that feature is a match.\n"
+            "Examples:\n"
+            "- Chunk contains GOAL-SPIKE-001 → match \"EER Formula\"\n"
+            "- Chunk contains NUTR-TASK-003 → match \"Date-stamped Diary\"\n"
+            "- Chunk contains TECH-001 → match \"Database Schema\"\n"
+            "- Chunk contains TECH-003 → match \"Authentication\"\n"
+            "- Chunk contains CF-007 → match \"Custom Food Versioning\"\n"
+            "- Chunk contains AN-CR-001 → match \"Bar Graph\"\n"
+            "- Chunk contains NUTR-EPIC-001 → match \"Food Diary Core\"\n"
+            "- Chunk contains GOAL-EPIC-001 → match \"Calorie Goal Setting\"\n"
+            "- Chunk contains GOAL-EPIC-002 → match \"Macro Goal Setting\"\n\n"
+            "METHOD 2 — Topic match:\n"
+            "If the chunk topic clearly relates to a feature — match it.\n"
+            "Examples:\n"
+            "- Chunk about \"EER formula\", \"calorie calculation\", \"activity levels\", "
+            "\"Harris-Benedict\" → match \"EER Formula\"\n"
+            "- Chunk about \"goal_snapshots\", \"date-accurate diary\", \"diary date\" → "
+            "match \"Goal Snapshots\"\n"
+            "- Chunk about \"JWT\", \"authentication\", \"refresh token\", \"login\" → "
+            "match \"Authentication\"\n"
+            "- Chunk about \"custom food\", \"CF-\" tickets → match \"Custom Food\"\n"
+            "- Chunk about \"bar graph redesign\", \"actual vs target graph\" → match \"Bar Graph\"\n"
+            "- Chunk about \"pregnant women\", \"prenatal\", \"pregnancy\" → match "
+            "\"Pregnant Women Segment\"\n"
+            "- Chunk about \"Day 7 retention\", \"cohort analysis\" → match "
+            "\"Retention Cohort Analysis\"\n"
+            "- Chunk about \"waitlist\", \"Instagram signup\", \"pre-launch\" → match \"Waitlist\"\n"
+            "- Chunk about \"Indian food\", \"Indian foods not found\", \"Indian food gap\" → "
+            "match \"Indian Food Gap\"\n"
+            "- Chunk about \"onboarding\", \"3 question flow\", \"ONBD tickets\" → match "
+            "\"Simplified Onboarding\"\n"
+            "- Chunk about \"NPS survey\", \"net promoter\" → match \"NPS Survey\"\n"
+            "- Chunk about \"RDA values\", \"micronutrient targets\" → match \"RDA Values\"\n"
+            "- Chunk about \"BMR\", \"below BMR warning\" → match \"BMR Warning\"\n"
+            "- Chunk about \"macro goal\", \"macro percentage\" → match \"Macro Goal Setting\"\n"
+            "- Chunk about \"USDA database\", \"food import\", \"300000 foods\" → match "
+            "\"USDA Database Integration\"\n"
+            "- Chunk about \"fuzzy search\", \"food search\" → match \"Fuzzy Search\"\n"
+            "- Chunk about \"supplement\", \"supplement toggle\" → match \"Supplement Tracking\"\n"
+            "- Chunk about \"trend graph\", \"7-day trend\" → match \"7-day Trend Graph\"\n"
+            "- Chunk about \"prenatal presets\", \"trimester\", \"ICMR\" → match \"Prenatal Presets\"\n"
+            "- Chunk about \"database schema\", \"table design\", \"Supabase tables\" → match "
+            "\"Database Schema\"\n"
+            "- Chunk about \"RLS\", \"row level security\", \"data isolation\" → match "
+            "\"RLS Policies\"\n"
+            "- Chunk about \"timezone\", \"IST midnight\", \"UTC\" → match \"Timezone Handling\"\n\n"
+            "METHOD 3 — When in doubt:\n"
+            "If a feature is clearly the main topic of the chunk even if not explicitly named — "
+            "include it.\n"
+            "It is better to include a feature that might be relevant than to miss it entirely.\n\n"
+            "Return maximum 3 features per chunk.\n"
+            "Return ONLY exact canonical names from the feature catalog below.\n"
+            "DO NOT invent feature names not in the catalog.\n\n"
+            "4. metrics:\n"
+            "Extract ONLY these specific product metrics when they appear in the text:\n"
+            "Day 7 retention, Day 30 retention, MAU, NPS, App Store rating, logging streak, "
+            "custom food retention, Instagram followers, waitlist users, beta users, delivery rate, "
+            "story points, engagement rate, install count.\n"
+            "DO NOT extract random numbers, percentages, or dates as metrics.\n"
+            "If none of these metrics appear — return empty list.\n\n"
+            "CRITICAL RULES FOR ALL FIELDS:\n"
+            "- Extract ONLY what is literally present in the chunk text.\n"
+            "- DO NOT infer or invent information that is not explicitly in the text.\n"
+            "- If the chunk is very short (under 20 words) and contains no meaningful content — "
+            "return empty lists for all fields.\n"
+            "- Short headings like \"Action Items\", \"Decisions Made\", \"Next Steps\" alone "
+            "contain no extractable metadata — return empty lists.\n\n"
+            "FEATURE CATALOG:\n"
+            f"{feature_catalog_str}\n\n"
+            "CHUNK TEXT:\n"
+            f"{content}\n\n"
+            "FORMAT:\n"
+            "Return ONLY a valid JSON object with exactly these four keys: people, ticket_ids, "
+            "features, metrics.\n"
+            "Each value is a list of strings. Empty list if nothing found.\n"
+            "No explanation. No preamble. No markdown fences. Only the JSON object."
+        )
+
+        # WHY THIS EXISTS IN PRISM AI:
+        # OpenRouter uses the same env vars as embedder and signal_detector so ops
+        # only configure OPENAI_API_KEY and OPENAI_BASE_URL once per worker.
+        #
+        # WHAT THIS BLOCK DOES:
+        # POST chat/completions with gpt-4.1-nano, temperature 0, chunk prompt.
+        #
+        # WHY THIS WAY:
+        # Mirrors classify_excel_sheet_with_llm headers and httpx timeout for
+        # consistent routing and failure modes across ingestion LLM calls.
+        #
+        # WHAT BREAKS IF THIS IS WRONG:
+        # Missing API key → every chunk gets empty metadata; wrong model → drift in
+        # extracted ticket IDs and feature names.
+        api_key = os.getenv("OPENAI_API_KEY")
+        base_url = os.getenv("OPENAI_BASE_URL")
+        url = f"{base_url.rstrip('/')}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/ShristiiS/PrismAI",
+            "X-Title": "PrismAI",
+        }
+        payload = {
+            "model": "openai/gpt-4.1-nano",
+            "max_tokens": 1000,
+            "temperature": 0,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        response = httpx.post(url, headers=headers, json=payload, timeout=60.0)
+        response.raise_for_status()
+
+        # WHY THIS EXISTS IN PRISM AI:
+        # Models often wrap JSON in markdown fences despite the format instruction.
+        #
+        # WHAT THIS BLOCK DOES:
+        # Reads assistant text, strips fences, json.loads, normalises four list keys.
+        #
+        # WHY THIS WAY:
+        # Same fence-stripping as signal_detector avoids brittle parse failures;
+        # coercing each value to list[str] guards against null/scalar model slips.
+        #
+        # WHAT BREAKS IF THIS IS WRONG:
+        # Strict key access without normalisation → KeyError and empty fallback on
+        # every chunk even when the model returned usable JSON.
+        response_data = response.json()
+        raw_content = response_data["choices"][0]["message"]["content"]
+        if not isinstance(raw_content, str):
+            raise ValueError("LLM response content is not a string")
+
+        cleaned_content = raw_content.strip()
+        if cleaned_content.startswith("```json"):
+            cleaned_content = cleaned_content[7:]
+        elif cleaned_content.startswith("```"):
+            cleaned_content = cleaned_content[3:]
+        if cleaned_content.endswith("```"):
+            cleaned_content = cleaned_content[:-3]
+        cleaned_content = cleaned_content.strip()
+
+        parsed = json.loads(cleaned_content)
+        result: Dict[str, List[str]] = {}
+        for key in ("people", "ticket_ids", "features", "metrics"):
+            value = parsed.get(key, [])
+            if not isinstance(value, list):
+                value = []
+            result[key] = [str(item) for item in value]
+        # Validate ticket_ids — regex filter, case insensitive
+        valid_ticket_pattern = re.compile(
+            r"^(TECH|GOAL|NUTR|CF|AN|BUG|MON|RES|RET|ONBD|PRE|MET|NPS|MKT|FUN|V2|INVEST|"
+            r"GOAL-BUG|NUTR-BUG|AN-BUG|CF-BUG|AN-CR|GOAL-SPIKE|NUTR-TASK|NUTR-EPIC|GOAL-EPIC|CF-EPIC)"
+            r"-\d+(-COMPLETE)?$"
+        )
+        result["ticket_ids"] = [
+            t
+            for t in result.get("ticket_ids", [])
+            if isinstance(t, str) and valid_ticket_pattern.match(t.upper())
+        ]
+
+        # Validate features — normalize casing, only keep exact catalog names
+        valid_feature_names_lower = {f["name"].lower(): f["name"] for f in feature_catalog}
+        result["features"] = [
+            valid_feature_names_lower[f.lower()]
+            for f in result.get("features", [])
+            if isinstance(f, str) and f.lower() in valid_feature_names_lower
+        ]
+
+        # Validate people — normalize casing, only keep known 6 team members
+        valid_people = {"arjun", "shristi", "priya", "kabir", "ananya", "ravi"}
+        result["people"] = [
+            p.capitalize() for p in result.get("people", [])
+            if isinstance(p, str) and p.lower() in valid_people
+        ]
+
+        # Validate metrics — no fixed whitelist, metrics are too varied
+        # Only drop obvious garbage: empty strings, bare numbers, absurdly long strings
+        result["metrics"] = [
+            m
+            for m in result.get("metrics", [])
+            if isinstance(m, str) and len(m.strip()) > 2 and len(m.strip()) < 100
+        ]
+        return result
+
+    except Exception as exc:
+        # WHY THIS EXISTS IN PRISM AI:
+        # Metadata enrichment must never abort a 3,000-chunk ingest because one
+        # OpenRouter call timed out or returned malformed JSON.
+        #
+        # WHAT THIS BLOCK DOES:
+        # Logs the failure and returns four empty lists (ingest continues).
+        #
+        # WHY THIS WAY:
+        # Fail-open on enrichment matches Excel LLM fallback philosophy — content
+        # and embeddings are more critical than optional filter columns.
+        #
+        # WHAT BREAKS IF THIS IS WRONG:
+        # Re-raising here → partial documents in Supabase with no chunks; PMs see
+        # missing files until manual re-run.
+        logger.error(
+            "extract_chunk_metadata failed: %s",
+            exc,
+            exc_info=True,
+        )
+        return dict(_EMPTY_CHUNK_METADATA)
+
+
 def ingest_file(
     file_path: str,
     source_id: str,
@@ -259,14 +819,30 @@ def ingest_file(
            ``signal_detector.detect_*`` and ``chunk_document``. Empty
            chunk lists are reported as ``"no_chunks_produced"`` so the
            connector can flag the file for human review.
-        7. **Embed** — single batch call (embedder handles internal
+        7. **Enrich chunk metadata** — load the Supabase feature catalog once,
+           then :func:`extract_chunk_metadata` per chunk (people, ticket_ids,
+           features, metrics) via LLM before embeddings are generated.
+        8. **Embed** — single batch call (embedder handles internal
            batching); errors propagate to the outer try/except.
-        8. **Store** —
+        9. **Store** —
               * insert_document (create) **or** update_document_after_reingestion
                 (update).
               * insert_chunks_with_embeddings.
               * Excel: ``upsert_row_hashes`` per sheet for the next
                 row-diff cycle.
+
+    Chunk metadata (``base_metadata``):
+        Denormalised fields copied onto every chunk for retrieval and UI:
+        * **doc_type** — from title + extension via :func:`_derive_doc_type`;
+          enables document-type filters (``jira``, ``retro``, ``prd``, etc.).
+        * **document_title** — Drive title for search-result display and
+          citations.
+        * **quarter** — from sprint via :func:`_derive_quarter`; powers
+          cross-sprint trend queries (``WHERE quarter = 'Q2'``).
+        * **file_created_at** — Drive timestamp or sprint calendar fallback
+          via :func:`_derive_file_date`; supports chronological retrieval.
+        * **file_updated_at** — last modified time from the connector.
+        * **owner** — file owner for attribution and people-centric filters.
 
     Returns:
         Success: ``{"status": "success", "title", "document_id",
@@ -384,6 +960,36 @@ def ingest_file(
             file_updated_at=file_updated_at,
             extra_metadata=extra_metadata,
         )
+
+        # WHY THIS EXISTS IN PRISM AI:
+        # Chunk rows expose doc_type, quarter, and dates as real columns so
+        # agents filter without JSON operators — "Q2 retros only", "newest
+        # PRDs first", "jira exports in this sprint".
+        #
+        # WHAT THIS BLOCK DOES:
+        # Enriches base_metadata with derived doc_type/quarter/date fields
+        # and display-oriented document_title before chunkers copy metadata
+        # onto every chunk.
+        #
+        # WHY THIS WAY:
+        # Helpers centralise Nutrivana sprint calendar rules; ingest_file
+        # only wires connector params (title, ext, sprint) into those rules
+        # once per file instead of duplicating logic in each chunker branch.
+        #
+        # WHAT BREAKS IF THIS IS WRONG:
+        # Missing doc_type → type filters return nothing. Wrong quarter →
+        # cross-sprint noise in answers. Wrong file_created_at → timeline
+        # retrieval ranks old sprint docs as "recent". Missing document_title
+        # → citations show file_id instead of a human-readable name.
+        quarter = _derive_quarter(sprint)
+        base_metadata.update({
+            "doc_type": _derive_doc_type(title, ext),
+            "document_title": title,
+            "quarter": quarter,
+            "file_created_at": _derive_file_date(sprint, file_created_at),
+            "file_updated_at": file_updated_at,
+            "owner": owner,
+        })
 
         # WHY THIS EXISTS IN PRISM AI:
         # Each format has its own parser AND its own chunker contract;
@@ -504,6 +1110,52 @@ def ingest_file(
                 "title": title,
                 "reason": "no_chunks_produced",
             }
+
+        # WHY THIS EXISTS IN PRISM AI:
+        # Feature canonical names live in Supabase so extract_chunk_metadata can
+        # map aliases to one vocabulary — same catalog for every sheet and format.
+        #
+        # WHAT THIS BLOCK DOES:
+        # Loads all feature ``name`` values into ``feature_catalog`` once per file.
+        #
+        # WHY THIS WAY:
+        # One query per ingest avoids N round trips inside the per-chunk LLM loop.
+        #
+        # WHAT BREAKS IF THIS IS WRONG:
+        # Empty catalog → model invents feature names; filters on features column
+        # return nothing or wrong product areas.
+        features_result = supabase.table("features").select("name").execute()
+        feature_catalog = (
+            features_result.data
+            if features_result.data
+            else []
+        )
+
+        # WHY THIS EXISTS IN PRISM AI:
+        # people/ticket_ids/features/metrics columns on document_chunks are filled
+        # from LLM extraction so agents filter without scanning chunk body text.
+        #
+        # WHAT THIS BLOCK DOES:
+        # Calls extract_chunk_metadata for every chunk (all Excel sheets, Word,
+        # PDF, slides, text) and merges results into chunk.metadata.
+        #
+        # WHY THIS WAY:
+        # Runs after chunking, before embed — enrichment failure returns empty
+        # lists and never blocks storage; content/vectors unchanged.
+        #
+        # WHAT BREAKS IF THIS IS WRONG:
+        # Skipping enrichment → ticket/people filters miss this file entirely;
+        # running after embed would require a second pass over stored rows.
+        for chunk in all_chunks:
+            quarter = chunk.metadata.get("quarter")
+            if quarter is None:
+                quarter = _derive_quarter_from_sheet(chunk.metadata.get("sheet_name"))
+            chunk.metadata["quarter"] = quarter
+            extracted = extract_chunk_metadata(chunk.content, feature_catalog)
+            chunk.metadata["people"] = extracted["people"]
+            chunk.metadata["ticket_ids"] = extracted["ticket_ids"]
+            chunk.metadata["features"] = extracted["features"]
+            chunk.metadata["metrics"] = extracted["metrics"]
 
         # WHY THIS EXISTS IN PRISM AI:
         # Embedding is the single most expensive step per file — we batch
@@ -666,9 +1318,18 @@ def ingest_email(
            reply chains and signatures; :func:`chunk_email` repeats
            ``From / Subject / Date`` on every chunk so retrieval results
            stay self-contained.
-        5. **Embed** — same batch path as files.
-        6. **Store** — create or update_document_after_reingestion +
+        5. **Enrich chunk metadata** — load the Supabase feature catalog once,
+           then :func:`extract_chunk_metadata` per chunk (people, ticket_ids,
+           features, metrics) via LLM before embeddings are generated.
+        6. **Embed** — same batch path as files.
+        7. **Store** — create or update_document_after_reingestion +
            insert_chunks_with_embeddings.
+
+    Email filter columns:
+        ``sender`` and ``subject`` in ``email_metadata`` flow onto every chunk
+        and are written as real ``document_chunks`` columns (not JSONB-only) so
+        retrieval can use indexed filters: "what did Arjun say" matches
+        ``sender``, "find the GOAL-BUG-005 thread" matches ``subject``.
 
     Returns:
         Success: ``{"status": "success", "subject", "document_id",
@@ -788,10 +1449,42 @@ def ingest_email(
         # same quoted chain instead of Alex's actual reply.
         clean_body = parse_email_body(body, is_html=True)
 
+        import re
+
+        sprint: Optional[str] = None
+        sprint_match = re.search(r"sprint\s*(\d+)", subject, re.IGNORECASE)
+        if sprint_match:
+            sprint = sprint_match.group(1)
+        else:
+            for label in gmail_labels or []:
+                sprint_match = re.search(r"sprint\s*(\d+)", label, re.IGNORECASE)
+                if sprint_match:
+                    sprint = sprint_match.group(1)
+                    break
+
+        sprint = int(sprint) if sprint is not None else None
+
+        quarter = _derive_quarter(sprint)
         email_metadata: Dict[str, Any] = {
             "source_type": "gmail",
             "email_id": email_id,
             "thread_id": thread_id,
+            # WHY THIS EXISTS IN PRISM AI:
+            # Sender and subject are the two most common email filters PMs use —
+            # "what did Arjun say" scopes by sender; "find the GOAL-BUG-005
+            # thread" scopes by subject line text.
+            #
+            # WHAT THIS BLOCK DOES:
+            # Copies connector sender/subject into email_metadata so chunkers and
+            # insert_chunks_with_embeddings can promote them to real table columns.
+            #
+            # WHY THIS WAY:
+            # Denormalised columns with indexes beat ``metadata->>'sender'`` on
+            # every Gmail poll; values must be present at ingest, not only in JSONB.
+            #
+            # WHAT BREAKS IF THIS IS WRONG:
+            # Missing keys → sender/subject columns stay NULL → email filters return
+            # empty sets even when the thread was ingested.
             "sender": sender,
             "recipients": recipients,
             "subject": subject,
@@ -800,6 +1493,30 @@ def ingest_email(
             "has_attachment": has_attachment,
             "attachment_names": attachment_names or [],
             "is_attachment": False,
+            "sprint": sprint,
+            # WHY THIS EXISTS IN PRISM AI:
+            # Quarter on chunk rows powers agent filters ("Q2 retros only") and
+            # keeps email artefacts aligned with Drive files in the same sprint
+            # calendar. Sprint number is the canonical Nutrivana join key.
+            #
+            # WHAT THIS BLOCK DOES:
+            # Maps the sprint extracted from subject/labels to Q1–Q4 via
+            # _derive_quarter — not from email_date.
+            #
+            # WHY THIS WAY:
+            # email_date is when the message was sent; quarter is which planning
+            # cycle the thread belongs to. A late reply in June about Sprint 8
+            # must stay Q2, not flip to Q2/Q3 based on send date.
+            #
+            # WHAT BREAKS IF THIS IS WRONG:
+            # Using email_date → wrong quarter on chunks; cross-quarter retrieval
+            # mixes Sprint 8 threads with Q3 OKR mail and PM filters return noise.
+            "quarter": quarter,
+            "doc_type": "email",
+            "document_title": subject,
+            "file_created_at": email_date,
+            "file_updated_at": email_date,
+            "author": sender,
         }
 
         chunks = chunk_email(clean_body, email_metadata)
@@ -816,6 +1533,53 @@ def ingest_email(
                 "subject": subject,
                 "reason": "no_chunks_produced",
             }
+
+        # WHY THIS EXISTS IN PRISM AI:
+        # Email chunks reference the same canonical feature names as Drive files
+        # so "everything about Simplified Onboarding" spans Gmail and PRDs.
+        #
+        # WHAT THIS BLOCK DOES:
+        # Loads feature names from Supabase once per message ingest.
+        #
+        # WHY THIS WAY:
+        # Reuses the shared ``features`` table instead of hard-coding catalog in
+        # pipeline.py; one query per email before the per-chunk LLM loop.
+        #
+        # WHAT BREAKS IF THIS IS WRONG:
+        # Stale or empty catalog → mis-tagged features on mail threads PMs search
+        # by product name.
+        features_result = supabase.table("features").select("name").execute()
+        feature_catalog = (
+            features_result.data
+            if features_result.data
+            else []
+        )
+
+        # WHY THIS EXISTS IN PRISM AI:
+        # Gmail threads mention tickets, people, and metrics inline — promoting
+        # LLM extraction onto metadata lets insert_chunks_with_embeddings write
+        # real filter columns (same as file ingest).
+        #
+        # WHAT THIS BLOCK DOES:
+        # Enriches every email chunk with people, ticket_ids, features, metrics.
+        #
+        # WHY THIS WAY:
+        # Before embed/store only — failures return empty lists and do not block
+        # the message from being searchable by body vector.
+        #
+        # WHAT BREAKS IF THIS IS WRONG:
+        # Enrich after storage → DB rows lack ticket_ids until re-ingest; PM
+        # "find GOAL-BUG-005 email" filters miss new mail.
+        for chunk in chunks:
+            quarter = chunk.metadata.get("quarter")
+            if quarter is None:
+                quarter = _derive_quarter_from_sheet(chunk.metadata.get("sheet_name"))
+            chunk.metadata["quarter"] = quarter
+            extracted = extract_chunk_metadata(chunk.content, feature_catalog)
+            chunk.metadata["people"] = extracted["people"]
+            chunk.metadata["ticket_ids"] = extracted["ticket_ids"]
+            chunk.metadata["features"] = extracted["features"]
+            chunk.metadata["metrics"] = extracted["metrics"]
 
         texts = [chunk.content for chunk in chunks]
         embeddings = get_embeddings(texts)

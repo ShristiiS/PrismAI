@@ -24,3 +24,7 @@ backend/test_ingestion.py
 backend/test_llm_classifier.py
 backend/verify_chunks.py
 desicion.md
+backend/check_supabase.py
+backend/test_catalog.py
+backend/test_catalog_type.py
+backend/test_delete_jira.py
