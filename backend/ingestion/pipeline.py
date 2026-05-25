@@ -544,85 +544,35 @@ def extract_chunk_metadata(content: str, feature_catalog: list[str]) -> dict:
             "team between January 2025 and June 2025.\n\n"
             "RULES:\n\n"
             "1. people:\n"
-            "Extract ONLY these six Nutrivana team members when their name appears "
-            "explicitly in the text:\n"
-            "Arjun, Shristi, Priya, Kabir, Ananya, Ravi.\n"
+            "Only extract if the person is actively involved — assignee, author, commenter, "
+            "decision maker, action item owner.\n"
+            "NOT if just mentioned in passing or referenced.\n"
+            "Only return names from this exact whitelist: Shristi, Arjun, Priya, Kabir, Ananya, Ravi.\n"
             "Use first name only.\n"
-            "DO NOT extract names that are not in this list.\n"
-            "DO NOT invent names if the chunk is short or has no names.\n"
-            "If no team member name appears in the text — return empty list.\n\n"
+            "Return empty array if no one from the list is actively involved.\n\n"
             "2. ticket_ids:\n"
-            "Extract ONLY strings that exactly match these patterns:\n"
-            "TECH-XXX, GOAL-XXX, NUTR-XXX, CF-XXX, AN-XXX, BUG-XXX, MON-XXX, RES-XXX, "
-            "RET-XXX, ONBD-XXX, PRE-XXX, MET-XXX, NPS-XXX, MKT-XXX, FUN-XXX, V2-XXX, "
-            "INVEST-XXX, GOAL-BUG-XXX, NUTR-BUG-XXX, AN-BUG-XXX, CF-BUG-XXX, AN-CR-XXX, "
-            "GOAL-SPIKE-XXX, NUTR-TASK-XXX, NUTR-EPIC-XXX, GOAL-EPIC-XXX, CF-EPIC-XXX\n"
-            "where XXX is one or more digits.\n"
-            "DO NOT extract words like WAITLIST, USDA, PRD, MVP, IST, EER, JWT as ticket IDs.\n"
-            "DO NOT invent ticket IDs. Only extract what literally appears in the text.\n\n"
+            "Scan every word in the chunk for ticket ID patterns.\n"
+            "A ticket ID is any code that follows this pattern: one or more uppercase words "
+            "separated by hyphens, ending in a number.\n"
+            "Examples of this pattern: TECH-001, NUTR-007, AN-CR-001, GOAL-BUG-002, CF-BUG-003, "
+            "NUTR-TASK-001.\n"
+            "These are examples of the FORMAT only — there are many more ticket IDs with the same "
+            "pattern that are not listed here.\n"
+            "Extract ALL codes matching this pattern found anywhere in the text.\n"
+            "DO NOT extract words like WAITLIST, USDA, PRD, MVP, IST, EER, JWT, V1, V2, V3, "
+            "Q1, Q2, Q3, Q4, P0, P1, P2, P3, API, RLS, DB, UI, UX, RDA, MAU, NPS, FAQ, OKR, KR "
+            "as ticket IDs.\n"
+            "Never return empty array if any code matching this pattern is visible in the text.\n\n"
             "3. features:\n"
-            "Match the chunk against the feature catalog using THREE methods in order:\n\n"
-            "METHOD 1 — Ticket ID match:\n"
-            "If a ticket ID in the chunk appears in a feature's aliases — that feature is a match.\n"
-            "Examples:\n"
-            "- Chunk contains GOAL-SPIKE-001 → match \"EER Formula\"\n"
-            "- Chunk contains NUTR-TASK-003 → match \"Date-stamped Diary\"\n"
-            "- Chunk contains TECH-001 → match \"Database Schema\"\n"
-            "- Chunk contains TECH-003 → match \"Authentication\"\n"
-            "- Chunk contains CF-007 → match \"Custom Food Versioning\"\n"
-            "- Chunk contains AN-CR-001 → match \"Bar Graph\"\n"
-            "- Chunk contains NUTR-EPIC-001 → match \"Food Diary Core\"\n"
-            "- Chunk contains GOAL-EPIC-001 → match \"Calorie Goal Setting\"\n"
-            "- Chunk contains GOAL-EPIC-002 → match \"Macro Goal Setting\"\n\n"
-            "METHOD 2 — Topic match:\n"
-            "If the chunk topic clearly relates to a feature — match it.\n"
-            "Examples:\n"
-            "- Chunk about \"EER formula\", \"calorie calculation\", \"activity levels\", "
-            "\"Harris-Benedict\" → match \"EER Formula\"\n"
-            "- Chunk about \"goal_snapshots\", \"date-accurate diary\", \"diary date\" → "
-            "match \"Goal Snapshots\"\n"
-            "- Chunk about \"JWT\", \"authentication\", \"refresh token\", \"login\" → "
-            "match \"Authentication\"\n"
-            "- Chunk about \"custom food\", \"CF-\" tickets → match \"Custom Food\"\n"
-            "- Chunk about \"bar graph redesign\", \"actual vs target graph\" → match \"Bar Graph\"\n"
-            "- Chunk about \"pregnant women\", \"prenatal\", \"pregnancy\" → match "
-            "\"Pregnant Women Segment\"\n"
-            "- Chunk about \"Day 7 retention\", \"cohort analysis\" → match "
-            "\"Retention Cohort Analysis\"\n"
-            "- Chunk about \"waitlist\", \"Instagram signup\", \"pre-launch\" → match \"Waitlist\"\n"
-            "- Chunk about \"Indian food\", \"Indian foods not found\", \"Indian food gap\" → "
-            "match \"Indian Food Gap\"\n"
-            "- Chunk about \"onboarding\", \"3 question flow\", \"ONBD tickets\" → match "
-            "\"Simplified Onboarding\"\n"
-            "- Chunk about \"NPS survey\", \"net promoter\" → match \"NPS Survey\"\n"
-            "- Chunk about \"RDA values\", \"micronutrient targets\" → match \"RDA Values\"\n"
-            "- Chunk about \"BMR\", \"below BMR warning\" → match \"BMR Warning\"\n"
-            "- Chunk about \"macro goal\", \"macro percentage\" → match \"Macro Goal Setting\"\n"
-            "- Chunk about \"USDA database\", \"food import\", \"300000 foods\" → match "
-            "\"USDA Database Integration\"\n"
-            "- Chunk about \"fuzzy search\", \"food search\" → match \"Fuzzy Search\"\n"
-            "- Chunk about \"supplement\", \"supplement toggle\" → match \"Supplement Tracking\"\n"
-            "- Chunk about \"trend graph\", \"7-day trend\" → match \"7-day Trend Graph\"\n"
-            "- Chunk about \"prenatal presets\", \"trimester\", \"ICMR\" → match \"Prenatal Presets\"\n"
-            "- Chunk about \"database schema\", \"table design\", \"Supabase tables\" → match "
-            "\"Database Schema\"\n"
-            "- Chunk about \"RLS\", \"row level security\", \"data isolation\" → match "
-            "\"RLS Policies\"\n"
-            "- Chunk about \"timezone\", \"IST midnight\", \"UTC\" → match \"Timezone Handling\"\n\n"
-            "METHOD 3 — When in doubt:\n"
-            "If a feature is clearly the main topic of the chunk even if not explicitly named — "
-            "include it.\n"
-            "It is better to include a feature that might be relevant than to miss it entirely.\n\n"
-            "Return maximum 3 features per chunk.\n"
-            "Return ONLY exact canonical names from the feature catalog below.\n"
-            "DO NOT invent feature names not in the catalog.\n\n"
+            "Only extract features that are explicitly and clearly discussed in the chunk.\n"
+            "Do NOT guess or infer features not directly mentioned.\n"
+            "Only return features from the provided feature catalog below.\n"
+            "Return empty array if nothing clearly matches.\n\n"
             "4. metrics:\n"
-            "Extract ONLY these specific product metrics when they appear in the text:\n"
-            "Day 7 retention, Day 30 retention, MAU, NPS, App Store rating, logging streak, "
-            "custom food retention, Instagram followers, waitlist users, beta users, delivery rate, "
-            "story points, engagement rate, install count.\n"
-            "DO NOT extract random numbers, percentages, or dates as metrics.\n"
-            "If none of these metrics appear — return empty list.\n\n"
+            "Only extract concrete numbers with context — percentages, counts, durations, ratings.\n"
+            "Do NOT extract vague references.\n"
+            'Format as descriptive string e.g. "Day 7 retention 47%", "NPS 41".\n'
+            "Return empty array if no concrete metrics present.\n\n"
             "CRITICAL RULES FOR ALL FIELDS:\n"
             "- Extract ONLY what is literally present in the chunk text.\n"
             "- DO NOT infer or invent information that is not explicitly in the text.\n"
@@ -1152,10 +1102,14 @@ def ingest_file(
                 quarter = _derive_quarter_from_sheet(chunk.metadata.get("sheet_name"))
             chunk.metadata["quarter"] = quarter
             extracted = extract_chunk_metadata(chunk.content, feature_catalog)
-            chunk.metadata["people"] = extracted["people"]
-            chunk.metadata["ticket_ids"] = extracted["ticket_ids"]
-            chunk.metadata["features"] = extracted["features"]
-            chunk.metadata["metrics"] = extracted["metrics"]
+            people = list(dict.fromkeys(extracted["people"]))
+            ticket_ids = list(dict.fromkeys(extracted["ticket_ids"]))
+            features = list(dict.fromkeys(extracted["features"]))
+            metrics = list(dict.fromkeys(extracted["metrics"]))
+            chunk.metadata["people"] = people
+            chunk.metadata["ticket_ids"] = ticket_ids
+            chunk.metadata["features"] = features
+            chunk.metadata["metrics"] = metrics
 
         # WHY THIS EXISTS IN PRISM AI:
         # Embedding is the single most expensive step per file — we batch
@@ -1576,10 +1530,14 @@ def ingest_email(
                 quarter = _derive_quarter_from_sheet(chunk.metadata.get("sheet_name"))
             chunk.metadata["quarter"] = quarter
             extracted = extract_chunk_metadata(chunk.content, feature_catalog)
-            chunk.metadata["people"] = extracted["people"]
-            chunk.metadata["ticket_ids"] = extracted["ticket_ids"]
-            chunk.metadata["features"] = extracted["features"]
-            chunk.metadata["metrics"] = extracted["metrics"]
+            people = list(dict.fromkeys(extracted["people"]))
+            ticket_ids = list(dict.fromkeys(extracted["ticket_ids"]))
+            features = list(dict.fromkeys(extracted["features"]))
+            metrics = list(dict.fromkeys(extracted["metrics"]))
+            chunk.metadata["people"] = people
+            chunk.metadata["ticket_ids"] = ticket_ids
+            chunk.metadata["features"] = features
+            chunk.metadata["metrics"] = metrics
 
         texts = [chunk.content for chunk in chunks]
         embeddings = get_embeddings(texts)

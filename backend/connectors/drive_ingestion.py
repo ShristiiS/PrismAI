@@ -106,6 +106,7 @@ def run_drive_ingestion() -> dict[str, Any]:
             local_path = download_file(service, file_id, file_name, TEMP_DIR)
 
             # Step 4: Hand off to the central ingestion pipeline.
+            modified_time = drive_file.get("modified_time")
             result = ingest_file(
                 file_path=local_path,
                 source_id=file_id,
@@ -113,7 +114,8 @@ def run_drive_ingestion() -> dict[str, Any]:
                 title=file_name,
                 folder=folder_label,
                 sprint=sprint,
-                file_updated_at=drive_file.get("modified_time"),
+                file_created_at=modified_time,
+                file_updated_at=modified_time,
             )
 
             status = result.get("status", "unknown")
