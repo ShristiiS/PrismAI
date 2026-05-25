@@ -367,6 +367,69 @@ def chunk_document(
     return _recursive_split(joined, base_metadata)
 
 
+def _split_heading_section_by_paragraphs(
+    text: str,
+    base_metadata: Dict[str, Any],
+) -> List[Chunk]:
+    """Split an oversized heading section at paragraph boundaries only.
+
+    Prefers ``\\n\\n`` breaks, then single ``\\n``. Never splits mid-sentence
+    or mid-word; an over-long paragraph is kept intact or split only on ``\\n``.
+    """
+    text = text.strip()
+    if not text:
+        return []
+
+    if len(text) <= MAX_SECTION_SIZE:
+        return [Chunk(content=text, chunk_index=0, metadata={**base_metadata})]
+
+    if "\n\n" in text:
+        units = [part.strip() for part in text.split("\n\n") if part.strip()]
+        join_sep = "\n\n"
+    else:
+        units = [part.strip() for part in text.split("\n") if part.strip()]
+        join_sep = "\n"
+
+    if not units:
+        return [Chunk(content=text, chunk_index=0, metadata={**base_metadata})]
+
+    packed: List[str] = []
+
+    def _pack_units(items: List[str], separator: str) -> None:
+        current = ""
+        for unit in items:
+            if len(unit) > MAX_SECTION_SIZE:
+                if current:
+                    packed.append(current)
+                    current = ""
+                if "\n" in unit:
+                    _pack_units(
+                        [line.strip() for line in unit.split("\n") if line.strip()],
+                        "\n",
+                    )
+                else:
+                    packed.append(unit)
+                continue
+
+            candidate = (current + separator + unit) if current else unit
+            if len(candidate) <= MAX_SECTION_SIZE:
+                current = candidate
+            else:
+                if current:
+                    packed.append(current)
+                current = unit
+
+        if current:
+            packed.append(current)
+
+    _pack_units(units, join_sep)
+
+    return [
+        Chunk(content=piece, chunk_index=idx, metadata={**base_metadata})
+        for idx, piece in enumerate(packed)
+    ]
+
+
 def _chunk_by_headings(
     elements: List[ParsedElement],
     split_on: str,
@@ -654,23 +717,19 @@ def _chunk_by_headings(
             # counter so the document's chunk indices stay contiguous.
             #
             # WHY THIS WAY:
-            # We pass ``body_text`` (without heading) to ``_recursive_split``
-            # because we want the splitter to cut on real paragraphs.
+            # We pass ``body_text`` (without heading) to
+            # ``_split_heading_section_by_paragraphs`` so sub-chunks break
+            # only at ``\\n\\n`` or ``\\n`` boundaries — never mid-sentence.
             # Then we manually prepend the heading to each sub-chunk's
             # content so retrieval still gets the section signal.
-            # Overwriting ``sub.metadata`` instead of merging is
-            # intentional: the recursive splitter emits its own
-            # ``strategy_used="recursive_fallback"`` which is true at
-            # the splitter level but wrong at the document level —
-            # this section is heading_based.
             #
             # WHAT BREAKS IF THIS IS WRONG:
-            # If we left strategy_used="recursive_fallback" on long-section
-            # sub-chunks, debugging would falsely flag those PRDs as
-            # "fell back to recursion" when they actually came through
-            # heading routing — masking real chunker problems elsewhere.
+            # Mid-sentence splits would mix unrelated ideas in one citation
+            # and break section-aware retrieval for long PRD blocks.
             else:
-                sub_chunks = _recursive_split(body_text, base_metadata)
+                sub_chunks = _split_heading_section_by_paragraphs(
+                    body_text, base_metadata
+                )
                 for sub in sub_chunks:
                     if current_heading:
                         sub.content = current_heading + "\n" + sub.content
@@ -1738,6 +1797,25 @@ def chunk_excel_sheet(
     # WHAT BREAKS IF THIS IS WRONG:
     # Emitting a chunk with only the sheet name → false positives on sheet-title queries.
     if not data_rows:
+        long_header_parts = [
+            str(cell).strip()
+            for cell in headers
+            if cell and len(str(cell).strip()) > 100
+        ]
+        if long_header_parts:
+            body = "\n".join(long_header_parts)
+            content = f"[{sheet_name}]\n" + body
+            return [
+                Chunk(
+                    content=content,
+                    chunk_index=0,
+                    metadata={
+                        **base_metadata,
+                        "sheet_name": sheet_name,
+                        "strategy_used": "single_chunk",
+                    },
+                )
+            ]
         return []
 
     out: List[Chunk] = []
