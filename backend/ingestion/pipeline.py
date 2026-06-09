@@ -33,6 +33,7 @@ What breaks if this module is wrong:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib  # noqa: F401  (kept per spec; storage.compute_hash is the canonical hasher)
 import json
 import logging
@@ -462,8 +463,6 @@ def _derive_file_date(
 _EMPTY_CHUNK_METADATA: Dict[str, List[str]] = {
     "people": [],
     "ticket_ids": [],
-    "features": [],
-    "metrics": [],
 }
 
 _VALID_TICKET_PATTERN = re.compile(
@@ -473,7 +472,7 @@ _VALID_TICKET_PATTERN = re.compile(
 )
 
 
-def extract_chunk_metadata(content: str, feature_catalog: list[str]) -> dict:
+def extract_chunk_metadata(content: str, feature_catalog: list[str], doc_type: str | None = None) -> dict:
     """Extract people, tickets, features, and metrics from one chunk via LLM.
 
     WHAT THIS FUNCTION DOES FOR PRISM AI:
@@ -507,9 +506,27 @@ def extract_chunk_metadata(content: str, feature_catalog: list[str]) -> dict:
     """
     logger = logging.getLogger(__name__)
 
+    def _fix1_ticket_id_regex(chunk_content: str, merged: Dict[str, List[str]]) -> None:
+        """Fix 1 — Ticket ID regex: scan content and add missing ticket IDs."""
+        ticket_pattern = re.compile(r"\b[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-\d+\b", re.IGNORECASE)
+        excluded_tokens = {
+            "WAITLIST", "USDA", "PRD", "MVP", "IST", "EER", "JWT",
+            "V1", "V2", "V3", "Q1", "Q2", "Q3", "Q4", "P0", "P1", "P2", "P3",
+            "API", "RLS", "DB", "UI", "UX", "RDA", "MAU", "NPS", "FAQ", "OKR", "KR",
+        }
+        existing = {ticket.upper() for ticket in merged.get("ticket_ids", [])}
+        for match in ticket_pattern.finditer(chunk_content):
+            ticket_id = match.group(0).upper()
+            if ticket_id in excluded_tokens or ticket_id in existing:
+                continue
+            merged.setdefault("ticket_ids", []).append(ticket_id)
+            existing.add(ticket_id)
+
     word_count = len(content.split())
     if word_count < 20:
-        return dict(_EMPTY_CHUNK_METADATA)
+        short_result = dict(_EMPTY_CHUNK_METADATA)
+        _fix1_ticket_id_regex(content, short_result)
+        return short_result
 
     try:
         # WHY THIS EXISTS IN PRISM AI:
@@ -529,67 +546,76 @@ def extract_chunk_metadata(content: str, feature_catalog: list[str]) -> dict:
         # WHAT BREAKS IF THIS IS WRONG:
         # Vague prompt → WAITLIST/USDA tagged as tickets; invented features break
         # ``WHERE features @> …`` filters; missing METHOD 2 → topic-only chunks get [].
-        feature_catalog_str = (
-            "\n".join(f["name"] for f in feature_catalog)
-            if feature_catalog
-            else "(empty catalog — return no features)"
-        )
-        prompt = (
-            "TASK:\n"
-            "Extract four types of metadata from a product document chunk for PrismAI — "
-            "a PM assistant tool for Nutrivana, an Indian nutrition tracking app.\n\n"
-            "CONTEXT:\n"
-            "Chunks come from sprint planning docs, meeting notes, Jira tickets, "
-            "retrospectives, OKR documents, and internal emails written by the Nutrivana "
-            "team between January 2025 and June 2025.\n\n"
-            "RULES:\n\n"
-            "1. people:\n"
-            "Only extract if the person is actively involved — assignee, author, commenter, "
-            "decision maker, action item owner.\n"
-            "NOT if just mentioned in passing or referenced.\n"
-            "Only return names from this exact whitelist: Shristi, Arjun, Priya, Kabir, Ananya, Ravi.\n"
-            "Use first name only.\n"
-            "Return empty array if no one from the list is actively involved.\n\n"
-            "2. ticket_ids:\n"
-            "Scan every word in the chunk for ticket ID patterns.\n"
-            "A ticket ID is any code that follows this pattern: one or more uppercase words "
-            "separated by hyphens, ending in a number.\n"
-            "Examples of this pattern: TECH-001, NUTR-007, AN-CR-001, GOAL-BUG-002, CF-BUG-003, "
-            "NUTR-TASK-001.\n"
-            "These are examples of the FORMAT only — there are many more ticket IDs with the same "
-            "pattern that are not listed here.\n"
-            "Extract ALL codes matching this pattern found anywhere in the text.\n"
-            "DO NOT extract words like WAITLIST, USDA, PRD, MVP, IST, EER, JWT, V1, V2, V3, "
-            "Q1, Q2, Q3, Q4, P0, P1, P2, P3, API, RLS, DB, UI, UX, RDA, MAU, NPS, FAQ, OKR, KR "
-            "as ticket IDs.\n"
-            "Never return empty array if any code matching this pattern is visible in the text.\n\n"
-            "3. features:\n"
-            "Only extract features that are explicitly and clearly discussed in the chunk.\n"
-            "Do NOT guess or infer features not directly mentioned.\n"
-            "Only return features from the provided feature catalog below.\n"
-            "Return empty array if nothing clearly matches.\n\n"
-            "4. metrics:\n"
-            "Only extract concrete numbers with context — percentages, counts, durations, ratings.\n"
-            "Do NOT extract vague references.\n"
-            'Format as descriptive string e.g. "Day 7 retention 47%", "NPS 41".\n'
-            "Return empty array if no concrete metrics present.\n\n"
-            "CRITICAL RULES FOR ALL FIELDS:\n"
-            "- Extract ONLY what is literally present in the chunk text.\n"
-            "- DO NOT infer or invent information that is not explicitly in the text.\n"
-            "- If the chunk is very short (under 20 words) and contains no meaningful content — "
-            "return empty lists for all fields.\n"
-            "- Short headings like \"Action Items\", \"Decisions Made\", \"Next Steps\" alone "
-            "contain no extractable metadata — return empty lists.\n\n"
-            "FEATURE CATALOG:\n"
-            f"{feature_catalog_str}\n\n"
-            "CHUNK TEXT:\n"
-            f"{content}\n\n"
-            "FORMAT:\n"
-            "Return ONLY a valid JSON object with exactly these four keys: people, ticket_ids, "
-            "features, metrics.\n"
-            "Each value is a list of strings. Empty list if nothing found.\n"
-            "No explanation. No preamble. No markdown fences. Only the JSON object."
-        )
+        prompt_1 = f"""## TASK
+Extract two types of metadata from a product document chunk for PrismAI — a PM assistant tool for Nutrivana, an Indian nutrition tracking app.
+
+## CONTEXT
+Chunks come from sprint planning docs, meeting notes, Jira tickets, retrospectives, OKR documents, and internal emails written by the Nutrivana team between January 2025 and June 2025.
+
+## RULES
+
+### 1. people
+
+#### EXTRACT IF
+Only extract if the person is actively and directly involved in this specific chunk:
+- Assignee of a ticket
+- Author of a comment or email
+- Decision maker ("Shristi decided...", "Shristi approved...")
+- Action item owner (person assigned a task with a due date)
+- Person who raised, flagged, or proposed something
+- Owner of an outcome or result in review or narrative text — this includes any person whose name appears in a possessive or active pattern: "X's work resulted in...", "X reduced...", "X built...", "X drove..." — extract that person
+- Owner listed in an Owner column in OKR initiative rows
+
+#### DO NOT EXTRACT IF
+DO NOT extract if:
+- The chunk only contains a list of attendees at the top of a document — attendees are passively listed, return []
+- The person is only mentioned in passing ("similar to what Kabir said", "a suggestion from Kabir")
+- The person is referenced but not actively doing anything in this chunk
+- The person only has a role or title next to their name with no described action
+
+Only return names from this exact whitelist: Shristi, Arjun, Priya, Kabir, Ananya, Ravi.
+Use first name only. No duplicates.
+Return [] if no one from the list is actively involved.
+
+### 2. ticket_ids
+Scan every single word in the FULL chunk text for ticket ID patterns.
+A ticket ID follows this pattern: one or more uppercase word segments separated by hyphens, ending in one or more digits.
+Examples of FORMAT only — there are many more: `TECH-001`, `NUTR-007`, `AN-CR-001`, GOAL-BUG-002, CF-BUG-003, NUTR-TASK-001, GOAL-003, CF-007.
+
+#### EXTRACT IF
+Extract ALL codes matching this pattern found ANYWHERE in the text including:
+- Primary ticket column
+- Comment text body
+- Notes columns in tables
+- Narrative and decision text
+- Any referenced ticket like "the fix from NUTR-026" or "dependency from GOAL-003"
+- Short one-line rows where the ticket ID appears as the header field value — always extract it
+
+#### DO NOT EXTRACT IF
+DO NOT extract these common words even if they match the pattern:
+WAITLIST, USDA, PRD, MVP, IST, EER, JWT, V1, V2, V3, Q1, Q2, Q3, Q4, P0, P1, P2, P3, API, RLS, DB, UI, UX, RDA, MAU, NPS, FAQ, OKR, KR
+
+NEVER invent ticket IDs — sprint numbers like "Sprint 8" are NOT ticket IDs. Dates, version numbers, and section labels are NOT ticket IDs. Section labels appearing in a Ticket ID column such as "Overall delivery rate" are NOT ticket IDs.
+Return [] only if truly no ticket ID pattern exists anywhere in the chunk.
+
+## CRITICAL RULES FOR ALL FIELDS
+- Extract ONLY what is literally present in the chunk text
+- DO NOT infer or invent anything not explicitly in the text
+- If the chunk is very short (under 20 words) and contains no meaningful content — return [] for all fields
+
+## CHUNK TEXT
+{content}
+
+## FORMAT
+Return ONLY a valid JSON object with exactly these two keys: people, ticket_ids.
+```json
+{{
+  "people": [],
+  "ticket_ids": []
+}}
+```
+Each value is a list of strings. Empty list if nothing found.
+No explanation. No preamble. No markdown fences. Only the JSON object."""
 
         # WHY THIS EXISTS IN PRISM AI:
         # OpenRouter uses the same env vars as embedder and signal_detector so ops
@@ -614,49 +640,49 @@ def extract_chunk_metadata(content: str, feature_catalog: list[str]) -> dict:
             "HTTP-Referer": "https://github.com/ShristiiS/PrismAI",
             "X-Title": "PrismAI",
         }
-        payload = {
-            "model": "openai/gpt-4.1-nano",
-            "max_tokens": 1000,
+        payload_base = {
+            "model": "gpt-4.1",
+            "max_completion_tokens": 1000,
             "temperature": 0,
-            "messages": [{"role": "user", "content": prompt}],
         }
-        response = httpx.post(url, headers=headers, json=payload, timeout=60.0)
-        response.raise_for_status()
 
-        # WHY THIS EXISTS IN PRISM AI:
-        # Models often wrap JSON in markdown fences despite the format instruction.
-        #
-        # WHAT THIS BLOCK DOES:
-        # Reads assistant text, strips fences, json.loads, normalises four list keys.
-        #
-        # WHY THIS WAY:
-        # Same fence-stripping as signal_detector avoids brittle parse failures;
-        # coercing each value to list[str] guards against null/scalar model slips.
-        #
-        # WHAT BREAKS IF THIS IS WRONG:
-        # Strict key access without normalisation → KeyError and empty fallback on
-        # every chunk even when the model returned usable JSON.
-        response_data = response.json()
-        raw_content = response_data["choices"][0]["message"]["content"]
-        if not isinstance(raw_content, str):
-            raise ValueError("LLM response content is not a string")
+        def _parse_llm_keys(response: httpx.Response, keys: tuple[str, ...]) -> Dict[str, List[str]]:
+            response.raise_for_status()
+            response_data = response.json()
+            raw_content = response_data["choices"][0]["message"]["content"]
+            if not isinstance(raw_content, str):
+                raise ValueError("LLM response content is not a string")
 
-        cleaned_content = raw_content.strip()
-        if cleaned_content.startswith("```json"):
-            cleaned_content = cleaned_content[7:]
-        elif cleaned_content.startswith("```"):
-            cleaned_content = cleaned_content[3:]
-        if cleaned_content.endswith("```"):
-            cleaned_content = cleaned_content[:-3]
-        cleaned_content = cleaned_content.strip()
+            cleaned_content = raw_content.strip()
+            if cleaned_content.startswith("```json"):
+                cleaned_content = cleaned_content[7:]
+            elif cleaned_content.startswith("```"):
+                cleaned_content = cleaned_content[3:]
+            if cleaned_content.endswith("```"):
+                cleaned_content = cleaned_content[:-3]
+            cleaned_content = cleaned_content.strip()
 
-        parsed = json.loads(cleaned_content)
-        result: Dict[str, List[str]] = {}
-        for key in ("people", "ticket_ids", "features", "metrics"):
-            value = parsed.get(key, [])
-            if not isinstance(value, list):
-                value = []
-            result[key] = [str(item) for item in value]
+            parsed = json.loads(cleaned_content)
+            out: Dict[str, List[str]] = {}
+            for key in keys:
+                value = parsed.get(key, [])
+                if not isinstance(value, list):
+                    value = []
+                out[key] = [str(item) for item in value]
+            return out
+
+        response_1 = httpx.post(
+            url,
+            headers=headers,
+            json={**payload_base, "messages": [{"role": "user", "content": prompt_1}]},
+            timeout=60.0,
+        )
+        parsed_1 = _parse_llm_keys(response_1, ("people", "ticket_ids"))
+        result: Dict[str, List[str]] = dict(parsed_1)
+
+        # Fix 1 — Ticket ID regex
+        _fix1_ticket_id_regex(content, result)
+
         # Validate ticket_ids — regex filter, case insensitive
         valid_ticket_pattern = re.compile(
             r"^(TECH|GOAL|NUTR|CF|AN|BUG|MON|RES|RET|ONBD|PRE|MET|NPS|MKT|FUN|V2|INVEST|"
@@ -669,27 +695,11 @@ def extract_chunk_metadata(content: str, feature_catalog: list[str]) -> dict:
             if isinstance(t, str) and valid_ticket_pattern.match(t.upper())
         ]
 
-        # Validate features — normalize casing, only keep exact catalog names
-        valid_feature_names_lower = {f["name"].lower(): f["name"] for f in feature_catalog}
-        result["features"] = [
-            valid_feature_names_lower[f.lower()]
-            for f in result.get("features", [])
-            if isinstance(f, str) and f.lower() in valid_feature_names_lower
-        ]
-
         # Validate people — normalize casing, only keep known 6 team members
         valid_people = {"arjun", "shristi", "priya", "kabir", "ananya", "ravi"}
         result["people"] = [
             p.capitalize() for p in result.get("people", [])
             if isinstance(p, str) and p.lower() in valid_people
-        ]
-
-        # Validate metrics — no fixed whitelist, metrics are too varied
-        # Only drop obvious garbage: empty strings, bare numbers, absurdly long strings
-        result["metrics"] = [
-            m
-            for m in result.get("metrics", [])
-            if isinstance(m, str) and len(m.strip()) > 2 and len(m.strip()) < 100
         ]
         return result
 
@@ -714,6 +724,177 @@ def extract_chunk_metadata(content: str, feature_catalog: list[str]) -> dict:
             exc_info=True,
         )
         return dict(_EMPTY_CHUNK_METADATA)
+
+
+async def generate_questions(chunk_text: str) -> list[str]:
+    """Generate 0–10 PM search questions that this chunk fully answers."""
+    logger = logging.getLogger(__name__)
+
+    system_prompt = f"""## Role
+
+You are building a search index for PrismAI, a Product Manager assistant for a mobile nutrition tracking app called Nutrivana.
+
+## Task
+
+Read the document chunk below carefully.
+
+Generate between **0 and 10** specific questions that a Product Manager would realistically search for where this chunk is the **direct and complete answer**.
+
+Read the content first and decide what questions this chunk can actually and fully answer.
+
+## When to return empty
+
+If the chunk contains no meaningful information a PM would search for — for example it is just a section header or empty — return an empty list.
+
+## Rules
+
+- Read the **ENTIRE** chunk from start to finish before generating any questions. Do not stop after covering a few facts.
+- Every distinct fact, number, decision, person, date, and action item that a PM would realistically search for must have at least one question. Cover all of them before stopping.
+- Even if the chunk is very short, if it contains any specific searchable fact — a name, a number, a date, a decision — generate at least one question for it.
+- Do **not** generate vague or generic questions like `What happened in Sprint 13?` or `What is this about?`
+- Every question must be specific enough that **this chunk and only this chunk** answers it.
+- For chunks containing tables or lists where each row is a distinct item, generate at least one specific question per row.
+- Do **not** summarise multiple rows into one broad question.
+- Never assume or infer a sprint number, sprint name, or any specific sprint reference that is **not** explicitly written in the chunk text. If the chunk does not mention a sprint number, refer to it as `this sprint` — do **not** insert a specific sprint number like `Sprint 13` or `Sprint 8`.
+
+## Output format
+
+Return **only** a JSON array of question strings.
+
+- No explanation
+- No numbering
+- No markdown fences
+- Just the JSON array
+
+## Examples
+
+### Correct output
+
+```json
+["What were the A/B test results for simplified onboarding?", "Why did the team decide to remove EER onboarding?"]
+```
+
+### Empty chunk
+
+```json
+[]
+```
+
+## Chunk text
+
+{chunk_text}"""
+
+    try:
+        api_key = os.getenv("OPENAI_API_KEY")
+        base_url = os.getenv("OPENAI_BASE_URL")
+        url = f"{base_url.rstrip('/')}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/ShristiiS/PrismAI",
+            "X-Title": "PrismAI",
+        }
+        payload = {
+            "model": "gpt-4.1-mini",
+            "max_completion_tokens": 2000,
+            "temperature": 0,
+            "messages": [{"role": "system", "content": system_prompt}],
+        }
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+
+        raw_content = response.json()["choices"][0]["message"]["content"]
+        if not isinstance(raw_content, str):
+            raise ValueError("LLM response content is not a string")
+
+        cleaned_content = raw_content.strip()
+        if cleaned_content.startswith("```json"):
+            cleaned_content = cleaned_content[7:]
+        elif cleaned_content.startswith("```"):
+            cleaned_content = cleaned_content[3:]
+        if cleaned_content.endswith("```"):
+            cleaned_content = cleaned_content[:-3]
+        cleaned_content = cleaned_content.strip()
+
+        parsed = json.loads(cleaned_content)
+        if not isinstance(parsed, list):
+            return []
+        return [str(item) for item in parsed if isinstance(item, str)]
+
+    except Exception as exc:
+        logger.error(
+            "generate_questions failed: %s",
+            exc,
+            exc_info=True,
+        )
+        return []
+
+
+async def _store_questions_for_chunk(
+    supabase: Any,
+    chunk_id: str,
+    chunk_content: str,
+) -> int:
+    """Generate, embed, and persist PM search questions for one chunk row."""
+    questions = await generate_questions(chunk_content)
+    if not questions:
+        return 0
+
+    embeddings = get_embeddings(questions)
+    if len(embeddings) != len(questions):
+        raise ValueError(
+            f"Embedding count {len(embeddings)} != question count {len(questions)}"
+        )
+
+    records = [
+        {
+            "chunk_id": chunk_id,
+            "question": question,
+            "question_embedding": embedding,
+            "question_index": index,
+        }
+        for index, (question, embedding) in enumerate(zip(questions, embeddings))
+    ]
+    supabase.table("chunk_questions").insert(records).execute()
+    return len(records)
+
+
+async def _store_questions_for_inserted_chunks_async(
+    supabase: Any,
+    inserted_chunks: List[Dict[str, Any]],
+) -> None:
+    for row in inserted_chunks:
+        chunk_id = row.get("id")
+        chunk_content = row.get("content")
+        if not chunk_id or not chunk_content:
+            continue
+        try:
+            stored = await _store_questions_for_chunk(supabase, chunk_id, chunk_content)
+            if stored:
+                logger.info(
+                    "Stored %s questions for chunk_id=%s",
+                    stored,
+                    chunk_id,
+                )
+        except Exception as exc:
+            logger.error(
+                "Question generation or storage failed for chunk_id=%s: %s",
+                chunk_id,
+                exc,
+                exc_info=True,
+            )
+
+
+def store_questions_for_inserted_chunks(
+    supabase: Any,
+    inserted_chunks: List[Dict[str, Any]],
+) -> None:
+    """Generate and store PM search questions for newly inserted document chunks."""
+    if not inserted_chunks:
+        return
+    asyncio.run(_store_questions_for_inserted_chunks_async(supabase, inserted_chunks))
 
 
 def ingest_file(
@@ -1101,15 +1282,13 @@ def ingest_file(
             if quarter is None:
                 quarter = _derive_quarter_from_sheet(chunk.metadata.get("sheet_name"))
             chunk.metadata["quarter"] = quarter
-            extracted = extract_chunk_metadata(chunk.content, feature_catalog)
+            extracted = extract_chunk_metadata(
+                chunk.content, feature_catalog, doc_type=chunk.metadata.get("doc_type")
+            )
             people = list(dict.fromkeys(extracted["people"]))
             ticket_ids = list(dict.fromkeys(extracted["ticket_ids"]))
-            features = list(dict.fromkeys(extracted["features"]))
-            metrics = list(dict.fromkeys(extracted["metrics"]))
             chunk.metadata["people"] = people
             chunk.metadata["ticket_ids"] = ticket_ids
-            chunk.metadata["features"] = features
-            chunk.metadata["metrics"] = metrics
 
         # WHY THIS EXISTS IN PRISM AI:
         # Embedding is the single most expensive step per file — we batch
@@ -1173,13 +1352,14 @@ def ingest_file(
                 supabase, document_id, content_hash
             )
 
-        chunks_stored = insert_chunks_with_embeddings(
+        inserted_chunks = insert_chunks_with_embeddings(
             supabase,
             document_id,
             all_chunks,
             embeddings,
         )
-        logger.info("Stored %s chunks for %s", chunks_stored, title)
+        logger.info("Stored %s chunks for %s", len(inserted_chunks), title)
+        store_questions_for_inserted_chunks(supabase, inserted_chunks)
 
         # WHY THIS EXISTS IN PRISM AI:
         # Excel row diffing depends on hashes captured at ingest time.
@@ -1214,7 +1394,7 @@ def ingest_file(
             "status": "success",
             "title": title,
             "document_id": document_id,
-            "chunks_stored": chunks_stored,
+            "chunks_stored": len(inserted_chunks),
             "action": action,
             "strategy_used": strategy_used,
         }
@@ -1529,15 +1709,13 @@ def ingest_email(
             if quarter is None:
                 quarter = _derive_quarter_from_sheet(chunk.metadata.get("sheet_name"))
             chunk.metadata["quarter"] = quarter
-            extracted = extract_chunk_metadata(chunk.content, feature_catalog)
+            extracted = extract_chunk_metadata(
+                chunk.content, feature_catalog, doc_type=chunk.metadata.get("doc_type")
+            )
             people = list(dict.fromkeys(extracted["people"]))
             ticket_ids = list(dict.fromkeys(extracted["ticket_ids"]))
-            features = list(dict.fromkeys(extracted["features"]))
-            metrics = list(dict.fromkeys(extracted["metrics"]))
             chunk.metadata["people"] = people
             chunk.metadata["ticket_ids"] = ticket_ids
-            chunk.metadata["features"] = features
-            chunk.metadata["metrics"] = metrics
 
         texts = [chunk.content for chunk in chunks]
         embeddings = get_embeddings(texts)
@@ -1560,19 +1738,20 @@ def ingest_email(
                 supabase, document_id, content_hash
             )
 
-        chunks_stored = insert_chunks_with_embeddings(
+        inserted_chunks = insert_chunks_with_embeddings(
             supabase,
             document_id,
             chunks,
             embeddings,
         )
-        logger.info("Stored %s email chunks for %s", chunks_stored, subject)
+        logger.info("Stored %s email chunks for %s", len(inserted_chunks), subject)
+        store_questions_for_inserted_chunks(supabase, inserted_chunks)
 
         return {
             "status": "success",
             "subject": subject,
             "document_id": document_id,
-            "chunks_stored": chunks_stored,
+            "chunks_stored": len(inserted_chunks),
             "action": action,
         }
 

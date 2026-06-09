@@ -684,8 +684,8 @@ def classify_excel_sheet_with_llm(sheet_name: str, rows: list) -> DetectionResul
         # WHAT BREAKS IF THIS IS WRONG:
         # Truncated output → invalid JSON; long timeouts → stuck ingest workers.
         payload = {
-            "model": "openai/gpt-5.4-nano",
-            "max_tokens": 4000,
+            "model": "gpt-5.4-nano",
+            "max_completion_tokens": 4000,
             "temperature": 0,
             "messages": [{"role": "user", "content": prompt}],
         }

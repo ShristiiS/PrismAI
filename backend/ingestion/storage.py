@@ -734,7 +734,7 @@ def insert_chunks_with_embeddings(
     document_id: str,
     chunks: List[Chunk],
     embeddings: List[List[float]],
-) -> int:
+) -> List[Dict[str, Any]]:
     """Insert paired Chunk rows and embedding vectors into ``document_chunks``.
 
     One-sentence summary: validates parallel lists, builds denormalised projection
@@ -765,7 +765,8 @@ def insert_chunks_with_embeddings(
            GOAL-BUG-005" uses ``WHERE subject ILIKE …`` on an indexed column.
 
     Returns:
-        Integer count of rows inserted (sum across batches).
+        List of inserted row dicts returned by PostgREST (includes ``id`` and
+        ``content`` for each chunk).
 
     What breaks if this is wrong:
         Misaligned zip → answers cite wrong sections. Oversized batches → HTTP 413
@@ -832,8 +833,6 @@ def insert_chunks_with_embeddings(
             "author": meta.get("owner") or meta.get("sender"),
             "people": meta.get("people", []),
             "ticket_ids": meta.get("ticket_ids", []),
-            "features": meta.get("features", []),
-            "metrics": meta.get("metrics", []),
             # WHY THIS EXISTS IN PRISM AI:
             # Gmail is filtered constantly by who sent the thread and what the
             # subject line mentions — these are hot paths, not occasional reads.
@@ -866,13 +865,14 @@ def insert_chunks_with_embeddings(
     #
     # WHAT BREAKS IF THIS IS WRONG:
     # Single giant insert → timeout or 413; partial failure loses granularity on retry.
-    total_inserted = 0
+    inserted_rows: List[Dict[str, Any]] = []
     batch_size = 100
     for start in range(0, len(records), batch_size):
         batch = records[start : start + batch_size]
         resp = supabase.table("document_chunks").insert(batch).execute()
+        if resp.data:
+            inserted_rows.extend(resp.data)
         inserted = len(resp.data) if resp.data else len(batch)
-        total_inserted += inserted
         logger.info(
             "Inserted document_chunks batch document_id=%s rows=%s (start_index=%s)",
             document_id,
@@ -883,9 +883,9 @@ def insert_chunks_with_embeddings(
     logger.info(
         "Finished insert_chunks_with_embeddings document_id=%s total_rows=%s",
         document_id,
-        total_inserted,
+        len(inserted_rows),
     )
-    return total_inserted
+    return inserted_rows
 
 
 def get_row_hashes_for_document(

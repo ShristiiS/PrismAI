@@ -102,7 +102,7 @@ logger = logging.getLogger(__name__)
 # 1. ``OPENAI_API_KEY`` / ``OPENAI_BASE_URL`` come from env so we never
 #    commit secrets and so the same code works locally, in staging,
 #    and in production with different keys.
-# 2. ``EMBEDDING_MODEL = "openai/text-embedding-3-small"`` — OpenRouter
+# 2. ``EMBEDDING_MODEL = "text-embedding-3-small"`` — OpenRouter
 #    routes the OpenAI prefix to the actual OpenAI embedding model.
 #    1536-dim is OpenAI's default for this model and what the Supabase
 #    pgvector column is sized for. Changing this without changing the
@@ -127,7 +127,7 @@ logger = logging.getLogger(__name__)
 # hours instead of minutes.
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")
-EMBEDDING_MODEL = "openai/text-embedding-3-small"
+EMBEDDING_MODEL = "text-embedding-3-small"
 EMBEDDING_DIMENSIONS = 1536
 BATCH_SIZE = 100
 DELAY_BETWEEN_BATCHES = 0.1

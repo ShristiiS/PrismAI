@@ -45,7 +45,8 @@ from connectors.google_drive import (
     get_drive_service,
     list_all_nutrivana_files,
 )
-from ingestion.pipeline import ingest_file
+from ingestion.pipeline import delete_file, ingest_file
+from ingestion.storage import get_supabase
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +176,38 @@ def run_drive_ingestion() -> dict[str, Any]:
         # Step 7: Throttle between files to avoid Drive / embedding rate limits.
         if index < len(drive_files):
             time.sleep(INGESTION_DELAY_SECONDS)
+
+    # DELETED detection: purge Supabase rows for files removed from Drive.
+    current_drive_ids = {drive_file["file_id"] for drive_file in drive_files}
+    supabase = get_supabase()
+    drive_documents: list[dict[str, Any]] = []
+    page_size = 1000
+    offset = 0
+    while True:
+        response = (
+            supabase.table("documents")
+            .select("source_id, title")
+            .eq("source_type", "google_drive")
+            .range(offset, offset + page_size - 1)
+            .execute()
+        )
+        batch = response.data or []
+        drive_documents.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += page_size
+
+    deleted_count = 0
+    for doc in drive_documents:
+        source_id = doc.get("source_id")
+        if not source_id or source_id in current_drive_ids:
+            continue
+        title = doc.get("title", "(unknown)")
+        delete_file(source_id)
+        print(f"DELETED: {title} ({source_id})")
+        deleted_count += 1
+
+    summary["deleted"] = deleted_count
 
     logger.info(
         "Drive ingestion complete — total=%d success=%d skipped=%d error=%d",
