@@ -756,6 +756,7 @@ If the chunk contains no meaningful information a PM would search for — for ex
 - For chunks containing tables or lists where each row is a distinct item, generate at least one specific question per row.
 - Do **not** summarise multiple rows into one broad question.
 - Never assume or infer a sprint number, sprint name, or any specific sprint reference that is **not** explicitly written in the chunk text. If the chunk does not mention a sprint number, refer to it as `this sprint` — do **not** insert a specific sprint number like `Sprint 13` or `Sprint 8`.
+- When a chunk contains specific facts, numbers, names, dates, or criteria — your questions must reference those specific details directly. Do **not** ask generic category questions. A question whose answer is a specific fact in the chunk is always better than a broad question that could match many chunks.
 
 ## Output format
 
@@ -796,7 +797,7 @@ Return **only** a JSON array of question strings.
         }
         payload = {
             "model": "gpt-4.1-mini",
-            "max_completion_tokens": 2000,
+            "max_completion_tokens": 32768,
             "temperature": 0,
             "messages": [{"role": "system", "content": system_prompt}],
         }
@@ -1421,49 +1422,60 @@ def ingest_email(
     attachment_names: Optional[List[str]] = None,
     existing_labels: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    """Ingest one Gmail message (HTML body, labels, sender/recipients).
+    """Ingest one Gmail message (HTML body, labels, sender/recipients) end-to-end.
 
     One-sentence summary: hashes ``email_id + body`` for dedup, distinguishes
-    "no change", "labels changed only" (zero embedding cost), and "body
-    changed" updates, then chunks + embeds + stores.
+    full skip vs label-only metadata update vs body-changed re-ingest, parses
+    sender/recipient headers into seed ``people``, chunks via
+    :func:`chunk_email`, enriches with LLM metadata, embeds, stores, and
+    generates per-chunk search questions.
 
     Why it exists for PrismAI:
-        Gmail is the noisiest source PMs ingest. Most polls return zero body
-        changes but plenty of label updates (Inbox → Done, custom tags). We
-        special-case label-only updates as a metadata write so the connector
-        can poll every 5 minutes without setting OpenRouter on fire.
+        Gmail is the highest-churn connector PMs poll frequently. Most polls
+        return zero body changes but plenty of label updates (Inbox → Done,
+        custom tags). We special-case label-only updates as a metadata write
+        so the connector can poll every few minutes without re-embedding.
+        PM questions like "what did Arjun say about GOAL-BUG-005?" depend on
+        accurate sender/recipient ``people`` tags, self-contained chunks, and
+        question embeddings — all produced here.
 
-    Steps (numbered):
-        1. **Hash** — content_hash = SHA-256 of ``email_id + body``;
-           includes ``email_id`` so two unrelated emails with the same body
-           snippet (auto-replies) don't collide.
-        2. **Get Supabase client** — singleton.
-        3. **Existing check** —
-              a. If hash matches AND labels match ``existing_labels`` →
-                 fully skip.
-              b. If hash matches AND labels differ → call
-                 :func:`storage.update_document_metadata_only` (only
-                 ``gmail_labels`` is touched; embeddings untouched). This
-                 is the **cheap label-rotation path**.
-              c. If hash differs → ``action = "update"``; delete old
-                 chunks, replace.
-              d. If no existing row → ``action = "create"``.
-        4. **Parse + chunk** — ``parse_email_body(html=True)`` strips
-           reply chains and signatures; :func:`chunk_email` repeats
-           ``From / Subject / Date`` on every chunk so retrieval results
-           stay self-contained.
-        5. **Enrich chunk metadata** — load the Supabase feature catalog once,
-           then :func:`extract_chunk_metadata` per chunk (people, ticket_ids,
-           features, metrics) via LLM before embeddings are generated.
-        6. **Embed** — same batch path as files.
-        7. **Store** — create or update_document_after_reingestion +
-           insert_chunks_with_embeddings.
+    Decisions made inside (each one explained):
+        1. **Hash = ``email_id + body``** — ``email_id`` guarantees uniqueness;
+           body detects content changes. Hashing body alone would collide on
+           identical auto-reply snippets across threads.
+        2. **Three-way dedup** — unchanged hash + labels → skip; unchanged hash
+           + different labels → metadata-only update (zero embed cost); changed
+           hash → delete old chunks and re-ingest.
+        3. **Sender display-name parsing** — Gmail ``From`` arrives as
+           ``Display Name <email@domain>``. We take the text before ``<``,
+           first word only, and whitelist-match against the six Nutrivana team
+           first names. PM filters use first names, not full display strings.
+        4. **Recipient plus-address parsing** — Nutrivana test mail uses
+           ``nutrivana.prism+shristi@gmail.com`` style addresses. The tag
+           after ``+`` encodes the intended recipient; regex extraction +
+           whitelist match is deterministic and avoids LLM hallucination on
+           headers.
+        5. **Seed ``people`` before LLM** — header-derived names are merged
+           with :func:`extract_chunk_metadata` output so To/From participants
+           appear in ``document_chunks.people`` even when the body never
+           mentions them by name.
+        6. **``sprint=None`` and ``quarter=None`` always** — email threads
+           are not sprint-scoped artefacts like Drive filenames. Subject-line
+           sprint tokens are unreliable (forwards, cross-sprint replies).
+           ``file_created_at`` / ``file_updated_at`` carry the send date for
+           chronological filters instead.
+        7. **``chunk_email`` paragraph splitting** — long bodies split on
+           ``\\n\\n`` (paragraph separator) with a repeated From/Subject/Date
+           prefix on every chunk so each retrieved slice is self-contained.
+        8. **Question generation after store** — same as file ingest;
+           :func:`store_questions_for_inserted_chunks` builds the
+           question-index retrieval layer per chunk.
 
-    Email filter columns:
-        ``sender`` and ``subject`` in ``email_metadata`` flow onto every chunk
-        and are written as real ``document_chunks`` columns (not JSONB-only) so
-        retrieval can use indexed filters: "what did Arjun say" matches
-        ``sender``, "find the GOAL-BUG-005 thread" matches ``subject``.
+    What the caller does with the return value:
+        The Gmail connector (``ingest_gmail.py``) inspects ``status`` to
+        increment success/skip/error counts, logs ``subject`` and
+        ``chunks_stored`` for operator visibility, and reads
+        ``document_id`` when it needs to count stored questions.
 
     Returns:
         Success: ``{"status": "success", "subject", "document_id",
@@ -1472,10 +1484,14 @@ def ingest_email(
         Metadata-only: ``{"status": "metadata_updated", "subject"}``.
         Error: ``{"status": "error", "subject", "reason"}``.
 
-    What breaks if this is wrong:
-        Re-embedding emails on every label tweak would cost more than the
-        rest of the ingestion combined. Skipping a real body change would
-        leave PMs reading stale customer escalations.
+    What breaks if this is wrong or missing:
+        Re-embedding on every label tweak would cost more than the rest of
+        ingestion combined. Skipping a real body change leaves PMs reading
+        stale escalations. Wrong sender/recipient parsing → "what did Priya
+        say?" misses threads she was on. Missing seed people → header-only
+        attribution lost. Wrong sprint/quarter on email → cross-sprint filter
+        noise. Skipping question generation → PM natural-language queries miss
+        the question-index retrieval path.
     """
     try:
         logger.info("Ingesting email: %s (email_id=%s)", subject, email_id)
@@ -1583,22 +1599,86 @@ def ingest_email(
         # same quoted chain instead of Alex's actual reply.
         clean_body = parse_email_body(body, is_html=True)
 
-        import re
+        team_whitelist = {"shristi", "arjun", "priya", "kabir", "ananya", "ravi"}
 
-        sprint: Optional[str] = None
-        sprint_match = re.search(r"sprint\s*(\d+)", subject, re.IGNORECASE)
-        if sprint_match:
-            sprint = sprint_match.group(1)
-        else:
-            for label in gmail_labels or []:
-                sprint_match = re.search(r"sprint\s*(\d+)", label, re.IGNORECASE)
-                if sprint_match:
-                    sprint = sprint_match.group(1)
-                    break
+        def _match_team_name(name: str) -> Optional[str]:
+            normalized = name.strip().lower()
+            if normalized in team_whitelist:
+                return normalized.capitalize()
+            return None
 
-        sprint = int(sprint) if sprint is not None else None
+        # WHY THIS EXISTS IN PRISM AI:
+        # Gmail ``From`` headers arrive as ``Display Name <email@domain>``.
+        # PM filters and ``document_chunks.people`` use first names (Arjun,
+        # Priya) — not full display strings or raw email addresses.
+        #
+        # WHAT THIS BLOCK DOES:
+        # Strips the angle-bracket email, takes the first word of the display
+        # name, and whitelist-matches against the six Nutrivana team members.
+        #
+        # WHY THIS WAY:
+        # Splitting on ``<`` is the RFC-5322 display-name boundary; first
+        # word matches how the team refers to each other in standups and Jira.
+        #
+        # WHAT BREAKS IF THIS IS WRONG:
+        # Parsing the full address or last name → ``people`` filters miss
+        # "what did Arjun say"; wrong whitelist pass → external senders
+        # pollute people columns.
+        display_name = sender.split("<", 1)[0].strip()
+        sender_first_name = display_name.split()[0] if display_name else ""
+        matched_sender = _match_team_name(sender_first_name)
 
-        quarter = _derive_quarter(sprint)
+        # WHY THIS EXISTS IN PRISM AI:
+        # Nutrivana test mail uses Gmail plus-addressing
+        # (``nutrivana.prism+shristi@gmail.com``) to encode the intended
+        # recipient in the To header without separate mailboxes per person.
+        #
+        # WHAT THIS BLOCK DOES:
+        # For each recipient address, regex-extracts the tag between ``+``
+        # and ``@``, capitalizes it, and whitelist-matches to a team name.
+        #
+        # WHY THIS WAY:
+        # Plus-tag extraction is deterministic — no LLM needed on headers.
+        # Multiple recipients are all collected because group threads can
+        # include several team members in To/Cc plus-addresses.
+        #
+        # WHAT BREAKS IF THIS IS WRONG:
+        # Missing plus-tag parse → recipient never appears in ``people``;
+        # "what did Shristi receive?" queries miss threads she was copied on.
+        matched_recipients: list[str] = []
+        for address in recipients:
+            plus_match = re.search(r"\+([^@]+)@", address)
+            if not plus_match:
+                continue
+            matched = _match_team_name(plus_match.group(1))
+            if matched:
+                matched_recipients.append(matched)
+
+        # WHY THIS EXISTS IN PRISM AI:
+        # Header-derived names must survive even when the email body never
+        # mentions them. The LLM enrichment pass can add body mentions but
+        # should not be the only source for From/To participants.
+        #
+        # WHAT THIS BLOCK DOES:
+        # Builds a deduplicated ``seed_people`` list from matched sender +
+        # all matched recipients, merged into chunk ``people`` after the
+        # LLM call.
+        #
+        # WHY THIS WAY:
+        # Seeding before :func:`extract_chunk_metadata` guarantees header
+        # attribution on every chunk; LLM output extends rather than
+        # replaces the list.
+        #
+        # WHAT BREAKS IF THIS IS WRONG:
+        # Skipping seed → PM asks "show me Priya's emails" and retrieval
+        # only finds threads where her name appears in the body text.
+        seed_people: list[str] = []
+        if matched_sender:
+            seed_people.append(matched_sender)
+        for name in matched_recipients:
+            if name not in seed_people:
+                seed_people.append(name)
+
         email_metadata: Dict[str, Any] = {
             "source_type": "gmail",
             "email_id": email_id,
@@ -1627,25 +1707,24 @@ def ingest_email(
             "has_attachment": has_attachment,
             "attachment_names": attachment_names or [],
             "is_attachment": False,
-            "sprint": sprint,
             # WHY THIS EXISTS IN PRISM AI:
-            # Quarter on chunk rows powers agent filters ("Q2 retros only") and
-            # keeps email artefacts aligned with Drive files in the same sprint
-            # calendar. Sprint number is the canonical Nutrivana join key.
+            # Email threads are not sprint-scoped Drive artefacts. Subject-line
+            # sprint tokens are unreliable (forwards, cross-sprint replies).
+            # PM date filters use ``file_created_at`` (send date) instead.
             #
             # WHAT THIS BLOCK DOES:
-            # Maps the sprint extracted from subject/labels to Q1–Q4 via
-            # _derive_quarter — not from email_date.
+            # Sets ``sprint`` and ``quarter`` to ``None`` on every email chunk.
             #
             # WHY THIS WAY:
-            # email_date is when the message was sent; quarter is which planning
-            # cycle the thread belongs to. A late reply in June about Sprint 8
-            # must stay Q2, not flip to Q2/Q3 based on send date.
+            # Drive files encode sprint in filenames; Gmail does not. Forcing
+            # sprint/quarter from subject/labels mis-tags late replies and
+            # breaks cross-quarter retrieval filters.
             #
             # WHAT BREAKS IF THIS IS WRONG:
-            # Using email_date → wrong quarter on chunks; cross-quarter retrieval
-            # mixes Sprint 8 threads with Q3 OKR mail and PM filters return noise.
-            "quarter": quarter,
+            # Inferring sprint from subject → Sprint 8 reply sent in Q3 lands
+            # in Q3 filters; PM cross-sprint queries return wrong threads.
+            "sprint": None,
+            "quarter": None,
             "doc_type": "email",
             "document_title": subject,
             "file_created_at": email_date,
@@ -1653,6 +1732,25 @@ def ingest_email(
             "author": sender,
         }
 
+        # WHY THIS EXISTS IN PRISM AI:
+        # Long email threads must become multiple embeddable units without
+        # losing who said what. ``chunk_email`` splits on ``\\n\\n``
+        # (paragraph separator) and repeats From/Subject/Date on every chunk.
+        #
+        # WHAT THIS BLOCK DOES:
+        # Delegates cleaned body + metadata to :func:`chunk_email`, which
+        # short-circuits to one chunk under 500 chars or packs paragraphs
+        # up to ``EMAIL_MAX_CHUNK`` for longer threads.
+        #
+        # WHY THIS WAY:
+        # Paragraph boundaries preserve conversational structure better than
+        # fixed character splits; the repeated prefix makes each chunk
+        # citable without fetching sibling chunks.
+        #
+        # WHAT BREAKS IF THIS IS WRONG:
+        # Skipping chunk_email → one giant embed mixes three topics and
+        # ranks for none; missing prefix repeat → "what did Alex say?"
+        # returns body text with no sender attribution.
         chunks = chunk_email(clean_body, email_metadata)
         logger.info(
             "Produced %s email chunks for %s",
@@ -1705,14 +1803,25 @@ def ingest_email(
         # Enrich after storage → DB rows lack ticket_ids until re-ingest; PM
         # "find GOAL-BUG-005 email" filters miss new mail.
         for chunk in chunks:
-            quarter = chunk.metadata.get("quarter")
-            if quarter is None:
-                quarter = _derive_quarter_from_sheet(chunk.metadata.get("sheet_name"))
-            chunk.metadata["quarter"] = quarter
             extracted = extract_chunk_metadata(
                 chunk.content, feature_catalog, doc_type=chunk.metadata.get("doc_type")
             )
-            people = list(dict.fromkeys(extracted["people"]))
+            # WHY THIS EXISTS IN PRISM AI:
+            # ``seed_people`` from headers must union with LLM-extracted body
+            # mentions so ``document_chunks.people`` is complete on every chunk.
+            #
+            # WHAT THIS BLOCK DOES:
+            # Merges header-seeded names with LLM ``people`` output using
+            # order-preserving deduplication before writing chunk metadata.
+            #
+            # WHY THIS WAY:
+            # ``dict.fromkeys(seed + extracted)`` keeps seed order first, then
+            # appends any new names the LLM found in the body text.
+            #
+            # WHAT BREAKS IF THIS IS WRONG:
+            # Overwriting seed with LLM-only output → header participants
+            # disappear when the body never names them explicitly.
+            people = list(dict.fromkeys(seed_people + extracted["people"]))
             ticket_ids = list(dict.fromkeys(extracted["ticket_ids"]))
             chunk.metadata["people"] = people
             chunk.metadata["ticket_ids"] = ticket_ids
@@ -1745,6 +1854,22 @@ def ingest_email(
             embeddings,
         )
         logger.info("Stored %s email chunks for %s", len(inserted_chunks), subject)
+        # WHY THIS EXISTS IN PRISM AI:
+        # Question-based retrieval is the primary PM search path after the
+        # metadata-extraction pivot. Each stored chunk needs 0–10 generated
+        # questions with embeddings in ``chunk_questions``.
+        #
+        # WHAT THIS BLOCK DOES:
+        # Calls :func:`store_questions_for_inserted_chunks` on the rows
+        # returned by :func:`insert_chunks_with_embeddings`.
+        #
+        # WHY THIS WAY:
+        # Questions require chunk UUIDs from Supabase — must run after insert,
+        # same pattern as :func:`ingest_file`.
+        #
+        # WHAT BREAKS IF THIS IS WRONG:
+        # Skipping question generation → natural-language PM queries miss
+        # the question-index path and rely on content embedding alone.
         store_questions_for_inserted_chunks(supabase, inserted_chunks)
 
         return {
